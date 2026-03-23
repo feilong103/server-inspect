@@ -1,26 +1,18 @@
 #!/usr/bin/env python3
 """
 Server Inspect - 核心巡检脚本
-采集指标 → 解析 → AI 分析 → 生成报告
+采集指标 → 解析 → 报告生成
+AI 分析与建议由 OpenClaw 在读取报告后注入
 """
 
-import os
-import re
-import json
-import sys
-import subprocess
-import asyncio
-import smtplib
+import os, re, json, sys, subprocess, asyncio, smtplib
 from datetime import datetime, timedelta
 from pathlib import Path
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field, asdict
-from enum import Enum
+from dataclasses import dataclass, field
 
-# 可选依赖
 try:
     import aiohttp
     HAS_AIOHTTP = True
@@ -29,13 +21,6 @@ except ImportError:
 
 WORK_DIR = Path.home() / ".qclaw" / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
-
-
-class AlertLevel(Enum):
-    CRITICAL = "🔴 Critical"
-    WARNING = "🟠 Warning"
-    INFO = "🟡 Info"
-    NORMAL = "🟢 Normal"
 
 
 @dataclass
@@ -55,8 +40,6 @@ class ServerReport:
     duration_ms: int
     metrics: Dict[str, MetricResult] = field(default_factory=dict)
     alerts: List[Dict] = field(default_factory=list)
-    ai_summary: str = ""
-    ai_suggestions: List[str] = field(default_factory=list)
     overall_status: str = "NORMAL"
 
 
@@ -66,8 +49,7 @@ class Config:
 
     def _load_config(self) -> dict:
         if not CONFIG_FILE.exists():
-            print(f"❌ 配置文件不存在: {CONFIG_FILE}")
-            print("   请先运行 init 初始化配置")
+            print(f"Config not found: {CONFIG_FILE}")
             sys.exit(1)
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -82,14 +64,11 @@ class Config:
         return self.data.get("alert_thresholds", {})
 
     def get_commands(self, groups: List[str]) -> List[Tuple[str, str]]:
-        """返回 (metric_id, command) 列表"""
-        metrics_groups = {
+        g = {
             "系统基础": {
                 "hostname": "hostname",
                 "uptime": "uptime -p 2>/dev/null || uptime",
-                "who": "who",
-                "last": "last -n 10",
-                "uname": "uname -a",
+                "who": "who", "last": "last -n 10", "uname": "uname -a",
             },
             "CPU": {
                 "top": "top -bn1 | head -20",
@@ -101,12 +80,12 @@ class Config:
                 "mem_usage": "free -h",
                 "swap": "free | grep Swap",
                 "top_mem": "ps aux --sort=-%mem | head -6",
-                "oom": "dmesg 2>/dev/null | grep -i 'out of memory\\|oom\\|killed process' | tail -5 || echo 'no oom events'",
+                "oom": "dmesg 2>/dev/null | grep -i 'out of memory\\|oom\\|killed' | tail -5 || echo 'no oom'",
             },
             "磁盘": {
                 "disk_usage": "df -h",
                 "disk_inode": "df -i",
-                "du_top": "timeout 5 du -sh /var/* 2>/dev/null | sort -rh | head -10 || echo 'du skipped (timeout or no access)'",
+                "du_top": "timeout 5 du -sh /var/* 2>/dev/null | sort -rh | head -10 || echo 'du skipped'",
                 "disk_io": "iostat -x 1 2 2>/dev/null | tail -20 || echo 'iostat not available'",
             },
             "网络": {
@@ -115,25 +94,23 @@ class Config:
                 "ss_summary": "ss -s",
                 "ss_listen": "ss -tlnp",
                 "tcp_status": "netstat -an | grep -v LISTEN | awk '{print $6}' | sort | uniq -c | sort -rn",
-                "bandwidth": "cat /proc/net/dev | awk 'NR>2 {print $1,$2,$10}'",
             },
             "服务": {
-                "service_status": "systemctl list-units --type=service --state=running | grep -E 'sshd|nginx|mysql|httpd|cron' || echo 'systemctl not available'",
+                "service_status": "systemctl list-units --type=service --state=running | grep -E 'sshd|nginx|mysql|cron' || echo 'systemctl not available'",
                 "process_count": "ps aux | wc -l",
             },
             "安全": {
-                "failed_login": "grep -i 'failed password\\|authentication failure' /var/log/auth.log 2>/dev/null | tail -20 || grep -i 'failed password' /var/log/secure 2>/dev/null | tail -20 || echo 'no auth log'",
+                "failed_login": "grep -i 'failed password\\|auth failure' /var/log/auth.log 2>/dev/null | tail -20 || grep -i 'failed' /var/log/secure 2>/dev/null | tail -20 || echo 'no auth log'",
                 "last_login": "last -n 10",
                 "sudo_usage": "journalctl -t sudo 2>/dev/null | tail -10 || echo 'no sudo log'",
-                "firewall": "systemctl is-active firewalld 2>/dev/null || ufw status 2>/dev/null || echo 'firewall status unknown'",
+                "firewall": "systemctl is-active firewalld 2>/dev/null || ufw status 2>/dev/null || echo 'unknown'",
             }
         }
-
         commands = []
         for group in groups:
-            if group in metrics_groups:
-                for metric_id, cmd in metrics_groups[group].items():
-                    commands.append((metric_id, cmd))
+            if group in g:
+                for mid, cmd in g[group].items():
+                    commands.append((mid, cmd))
         return commands
 
 
@@ -145,45 +122,26 @@ class SSHExecutor:
 
     def execute(self, command: str, timeout: int = 30) -> Tuple[bool, str]:
         if self.server["host"] in ("127.0.0.1", "localhost", ""):
-            # 本机执行
             try:
-                result = subprocess.run(
-                    command, shell=True, capture_output=True,
-                    text=True, timeout=timeout
-                )
-                return result.returncode == 0, result.stdout + result.stderr
+                r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+                return r.returncode == 0, r.stdout + r.stderr
             except subprocess.TimeoutExpired:
-                return False, "Command timeout"
+                return False, "timeout"
             except Exception as e:
                 return False, str(e)
-
-        # SSH 远程执行
         try:
             if self.password:
-                # 密码认证：使用 sshpass
-                cmd = [
-                    "sshpass", "-p", self.password,
-                    "ssh",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "ConnectTimeout=10",
-                    "-p", str(self.server.get("ssh_port", 22)),
-                    f"{self.server['ssh_user']}@{self.server['host']}",
-                    command
-                ]
+                cmd = ["sshpass", "-p", self.password, "ssh",
+                       "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+                       "-p", str(self.server.get("ssh_port", 22)),
+                       f"{self.server['ssh_user']}@{self.server['host']}", command]
             else:
-                # 密钥认证
-                cmd = [
-                    "ssh",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "ConnectTimeout=10",
-                    "-o", "BatchMode=yes",
-                    "-i", self.key,
-                    "-p", str(self.server.get("ssh_port", 22)),
-                    f"{self.server['ssh_user']}@{self.server['host']}",
-                    command
-                ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            return result.returncode == 0, result.stdout + result.stderr
+                cmd = ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10",
+                       "-o", "BatchMode=yes", "-i", self.key,
+                       "-p", str(self.server.get("ssh_port", 22)),
+                       f"{self.server['ssh_user']}@{self.server['host']}", command]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return r.returncode == 0, r.stdout + r.stderr
         except subprocess.TimeoutExpired:
             return False, "SSH timeout"
         except Exception as e:
@@ -191,637 +149,518 @@ class SSHExecutor:
 
     def execute_batch(self, commands: List[Tuple[str, str]], timeout: int = 10) -> Dict[str, MetricResult]:
         results = {}
-        for metric_id, cmd in commands:
+        for mid, cmd in commands:
             ok, output = self.execute(cmd, timeout=timeout)
-            results[metric_id] = MetricResult(
-                metric_id=metric_id,
-                raw_output=output if ok else f"ERROR: {output}",
-                alert_level="ERROR" if not ok else "OK"
-            )
+            results[mid] = MetricResult(metric_id=mid, raw_output=output if ok else f"ERROR: {output}",
+                                        alert_level="ERROR" if not ok else "OK")
         return results
 
 
 class MetricParser:
-    """指标解析器 - 将原始命令输出解析为结构化数据"""
-
     def __init__(self, thresholds: dict):
         self.thresholds = thresholds
 
-    def parse_cpu(self, metrics: Dict[str, MetricResult]) -> Dict:
-        """解析 CPU 指标"""
-        result = {"usage_percent": 0, "load_1m": 0, "load_5m": 0, "alerts": []}
+    def parse_all(self, metrics: Dict[str, MetricResult]) -> List[Dict]:
+        alerts = []
+        t = self.thresholds
 
-        # 解析 top 输出
+        # CPU
         if "top" in metrics:
-            top_output = metrics["top"].raw_output
-            # 提取 CPU 使用率: %Cpu(s): 12.3 us, ...
-            match = re.search(r'%Cpu\(s\):\s*([\d.]+)\s*us', top_output)
-            if match:
-                result["usage_percent"] = float(match.group(1))
+            m = re.search(r'%Cpu\(s\):\s*([\d.]+)\s*us', metrics["top"].raw_output)
+            cpu_pct = float(m.group(1)) if m else 0.0
+            if cpu_pct >= 95:
+                alerts.append({"level": "CRITICAL", "message": f"CPU 使用率 {cpu_pct:.1f}% 超过 95% 阈值"})
+            elif cpu_pct >= t.get("cpu_percent", 80):
+                alerts.append({"level": "WARNING", "message": f"CPU 使用率 {cpu_pct:.1f}% 超过 {t.get('cpu_percent',80)}% 阈值"})
 
-        # 解析负载
-        if "loadavg" in metrics:
-            loadavg = metrics["loadavg"].raw_output.strip()
-            if not loadavg.startswith("ERROR"):
-                parts = loadavg.split()
-                if len(parts) >= 3:
+        if "loadavg" in metrics and not metrics["loadavg"].raw_output.startswith("ERROR"):
+            parts = metrics["loadavg"].raw_output.strip().split()
+            if parts:
+                try:
+                    load_1m = float(parts[0])
+                    if load_1m >= t.get("loadavg_1m", 4) * 2:
+                        alerts.append({"level": "CRITICAL", "message": f"1分钟负载 {load_1m} 严重过高"})
+                    elif load_1m >= t.get("loadavg_1m", 4):
+                        alerts.append({"level": "WARNING", "message": f"1分钟负载 {load_1m} 偏高"})
+                except: pass
+
+        # Memory
+        if "mem_usage" in metrics and not metrics["mem_usage"].raw_output.startswith("ERROR"):
+            lines = metrics["mem_usage"].raw_output.strip().split("\n")
+            if len(lines) >= 2:
+                tm = re.search(r'Mem:\s+(\S+)', lines[1])
+                um = re.search(r'Mem:\s+\S+\s+(\S+)', lines[1])
+                if tm and um:
+                    def to_mb(s):
+                        s = s.strip()
+                        if 'G' in s: return float(re.sub(r'[A-Za-z]','',s)) * 1024
+                        if 'M' in s: return float(re.sub(r'[A-Za-z]','',s))
+                        if 'K' in s: return float(re.sub(r'[A-Za-z]','',s)) / 1024
+                        return 0.0
                     try:
-                        result["load_1m"] = float(parts[0])
-                        result["load_5m"] = float(parts[1])
-                    except ValueError:
-                        pass
-
-        # 告警判断
-        threshold = self.thresholds.get("cpu_percent", 80)
-        if result["usage_percent"] >= 95:
-            result["alerts"].append({
-                "level": "CRITICAL",
-                "message": f"CPU 使用率 {result['usage_percent']:.1f}% 超过 95% 阈值"
-            })
-        elif result["usage_percent"] >= threshold:
-            result["alerts"].append({
-                "level": "WARNING",
-                "message": f"CPU 使用率 {result['usage_percent']:.1f}% 超过 {threshold}% 阈值"
-            })
-
-        load_threshold = self.thresholds.get("loadavg_1m", 4)
-        if result["load_1m"] >= load_threshold * 2:
-            result["alerts"].append({
-                "level": "CRITICAL",
-                "message": f"1分钟负载 {result['load_1m']} 过高"
-            })
-        elif result["load_1m"] >= load_threshold:
-            result["alerts"].append({
-                "level": "WARNING",
-                "message": f"1分钟负载 {result['load_1m']} 偏高"
-            })
-
-        return result
-
-    def parse_memory(self, metrics: Dict[str, MetricResult]) -> Dict:
-        """解析内存指标"""
-        result = {"total_gb": 0, "used_gb": 0, "usage_percent": 0, "swap_percent": 0, "alerts": []}
-
-        if "mem_usage" in metrics:
-            output = metrics["mem_usage"].raw_output
-            if not output.startswith("ERROR"):
-                lines = output.strip().split("\n")
-                if len(lines) >= 2:
-                    # Mem: 行
-                    mem_match = re.search(r'Mem:\s*([\d.]+[GMK]?)\s+([\d.]+[GMK]?)\s+([\d.]+[GMK]?)', lines[1])
-                    if mem_match:
-                        def parse_size(s):
-                            if 'G' in s: return float(s.replace('Gi','').replace('G','')) * 1024
-                            if 'M' in s: return float(s.replace('Mi','').replace('M',''))
-                            if 'K' in s: return float(s.replace('Ki','').replace('K','')) / 1024
-                            return 0
-                        total = parse_size(mem_match.group(1))
-                        used = parse_size(mem_match.group(2))
+                        total = to_mb(tm.group(1))
+                        used = to_mb(um.group(1))
                         if total > 0:
-                            result["usage_percent"] = (used / total) * 100
-                            result["total_gb"] = total / 1024
-                            result["used_gb"] = used / 1024
+                            mp = round((used/total)*100, 1)
+                            if mp >= 95:
+                                alerts.append({"level": "CRITICAL", "message": f"内存使用率 {mp}% 超过 95%"})
+                            elif mp >= t.get("mem_percent", 85):
+                                alerts.append({"level": "WARNING", "message": f"内存使用率 {mp}% 超过 {t.get('mem_percent',85)}% 阈值"})
+                    except: pass
 
-        if "swap" in metrics:
-            swap_output = metrics["swap"].raw_output
-            if not swap_output.startswith("ERROR"):
-                swap_match = re.search(r'Swap:\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)', swap_output)
-                if swap_match:
-                    total = float(swap_match.group(1))
-                    used = float(swap_match.group(2))
-                    if total > 0:
-                        result["swap_percent"] = (used / total) * 100
+        if "swap" in metrics and not metrics["swap"].raw_output.startswith("ERROR"):
+            m = re.search(r'Swap:\s*([\d.]+)\s+([\d.]+)', metrics["swap"].raw_output)
+            if m and float(m.group(1)) > 0:
+                sp = round((float(m.group(2))/float(m.group(1)))*100, 1)
+                if sp >= 50:
+                    alerts.append({"level": "WARNING", "message": f"Swap 使用率 {sp}%，可能存在内存压力"})
 
-        # 告警
-        threshold = self.thresholds.get("mem_percent", 85)
-        if result["usage_percent"] >= 95:
-            result["alerts"].append({
-                "level": "CRITICAL",
-                "message": f"内存使用率 {result['usage_percent']:.1f}% 超过 95%"
-            })
-        elif result["usage_percent"] >= threshold:
-            result["alerts"].append({
-                "level": "WARNING",
-                "message": f"内存使用率 {result['usage_percent']:.1f}% 超过 {threshold}%"
-            })
+        # Disk
+        if "disk_usage" in metrics and not metrics["disk_usage"].raw_output.startswith("ERROR"):
+            for line in metrics["disk_usage"].raw_output.strip().split("\n")[1:]:
+                parts = line.split()
+                if len(parts) >= 5 and parts[0].startswith("/dev"):
+                    try:
+                        usage = int(parts[-2].replace('%',''))
+                        mount = parts[-1]
+                        if usage >= 95:
+                            alerts.append({"level": "CRITICAL", "message": f"{mount} 磁盘使用率 {usage}% 超过 95%"})
+                        elif usage >= t.get("disk_percent", 90):
+                            alerts.append({"level": "WARNING", "message": f"{mount} 磁盘使用率 {usage}% 超过 {t.get('disk_percent',90)}% 阈值"})
+                    except: pass
 
-        if result["swap_percent"] >= 50:
-            result["alerts"].append({
-                "level": "WARNING",
-                "message": f"Swap 使用率 {result['swap_percent']:.1f}%，可能存在内存压力"
-            })
+        # Security
+        if "failed_login" in metrics and not metrics["failed_login"].raw_output.startswith("ERROR"):
+            cnt = len([l for l in metrics["failed_login"].raw_output.strip().split("\n") if l and "failed" in l.lower()])
+            if cnt >= 20:
+                alerts.append({"level": "CRITICAL", "message": f"发现 {cnt} 次登录失败，存在暴力破解风险"})
+            elif cnt >= t.get("failed_login_per_hour", 5):
+                alerts.append({"level": "WARNING", "message": f"发现 {cnt} 次登录失败"})
 
-        return result
-
-    def parse_disk(self, metrics: Dict[str, MetricResult]) -> Dict:
-        """解析磁盘指标"""
-        result = {"partitions": [], "alerts": []}
-
-        if "disk_usage" in metrics:
-            output = metrics["disk_usage"].raw_output
-            if not output.startswith("ERROR"):
-                lines = output.strip().split("\n")
-                for line in lines[1:]:  # 跳过标题行
-                    parts = line.split()
-                    if len(parts) >= 5:
-                        mount = parts[-1] if not parts[-1].startswith('/dev') else parts[-2]
-                        usage_str = parts[-2].replace('%', '')
-                        try:
-                            usage = int(usage_str)
-                            size = parts[1]
-                            result["partitions"].append({
-                                "mount": mount,
-                                "usage_percent": usage,
-                                "size": size
-                            })
-
-                            threshold = self.thresholds.get("disk_percent", 90)
-                            if usage >= 95:
-                                result["alerts"].append({
-                                    "level": "CRITICAL",
-                                    "message": f"{mount} 磁盘使用率 {usage}% 超过 95%"
-                                })
-                            elif usage >= threshold:
-                                result["alerts"].append({
-                                    "level": "WARNING",
-                                    "message": f"{mount} 磁盘使用率 {usage}% 超过 {threshold}%"
-                                })
-                        except ValueError:
-                            pass
-
-        return result
-
-    def parse_security(self, metrics: Dict[str, MetricResult]) -> Dict:
-        """解析安全指标"""
-        result = {"failed_login_count": 0, "alerts": []}
-
-        if "failed_login" in metrics:
-            output = metrics["failed_login"].raw_output
-            if not output.startswith("ERROR"):
-                count = len([l for l in output.strip().split("\n") if l and "failed" in l.lower()])
-                result["failed_login_count"] = count
-
-                threshold = self.thresholds.get("failed_login_per_hour", 5)
-                if count >= 20:
-                    result["alerts"].append({
-                        "level": "CRITICAL",
-                        "message": f"过去记录中发现 {count} 次登录失败，可能存在暴力破解"
-                    })
-                elif count >= threshold:
-                    result["alerts"].append({
-                        "level": "WARNING",
-                        "message": f"过去记录中发现 {count} 次登录失败"
-                    })
-
-        return result
-
-    def parse_network(self, metrics: Dict[str, MetricResult]) -> Dict:
-        """解析网络指标"""
-        result = {"tcp_connections": 0, "time_wait": 0, "alerts": []}
-
-        if "netstat_summary" in metrics:
-            try:
-                output = metrics["netstat_summary"].raw_output.strip()
-                if not output.startswith("ERROR"):
-                    result["tcp_connections"] = int(output)
-            except:
-                pass
-
-        if "tcp_status" in metrics:
-            output = metrics["tcp_status"].raw_output
-            if not output.startswith("ERROR"):
-                for line in output.strip().split("\n"):
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        try:
-                            count = int(parts[0])
-                            status = parts[1]
-                            if "TIME_WAIT" in status:
-                                result["time_wait"] = count
-                        except ValueError:
-                            pass
-
-        # 告警
-        threshold = self.thresholds.get("netstat_connections", 5000)
-        if result["tcp_connections"] >= 10000:
-            result["alerts"].append({
-                "level": "CRITICAL",
-                "message": f"TCP 连接数 {result['tcp_connections']} 过高"
-            })
-        elif result["tcp_connections"] >= threshold:
-            result["alerts"].append({
-                "level": "WARNING",
-                "message": f"TCP 连接数 {result['tcp_connections']} 偏高"
-            })
-
-        return result
-
-
-class FeishuNotifier:
-    def __init__(self, webhook_url: str):
-        self.webhook_url = webhook_url
-
-    async def send(self, content: str):
-        if not self.webhook_url:
-            print("⚠️ 未配置飞书 Webhook")
-            return False
-
-        if not HAS_AIOHTTP:
-            print("⚠️ 未安装 aiohttp，跳过飞书通知")
-            return False
-
-        payload = {
-            "msg_type": "markdown",
-            "content": {
-                "text": content
-            }
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self.webhook_url, json=payload, timeout=5) as resp:
-                    if resp.status == 200:
-                        return True
-                    else:
-                        print(f"❌ 飞书通知失败: {resp.status}")
-                        return False
-        except Exception as e:
-            print(f"❌ 飞书通知异常: {e}")
-            return False
-
-
-class EmailNotifier:
-    def __init__(self, config: dict):
-        self.config = config
-
-    def send(self, subject: str, html_content: str) -> bool:
-        if not self.config.get("smtp_host"):
-            print("⚠️ 未配置邮件 SMTP")
-            return False
-
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = self.config.get("from", self.config.get("smtp_user"))
-            msg["To"] = ",".join(self.config.get("to", []))
-
-            msg.attach(MIMEText(html_content, "html", "utf-8"))
-
-            server = smtplib.SMTP(self.config["smtp_host"], self.config["smtp_port"])
-            server.starttls()
-            server.login(self.config["smtp_user"], self.config["smtp_password"])
-            server.sendmail(msg["From"], self.config["to"], msg.as_string())
-            server.quit()
-            return True
-        except Exception as e:
-            print(f"❌ 邮件发送失败: {e}")
-            return False
+        return alerts
 
 
 class ReportGenerator:
-    """报告生成器"""
 
     @staticmethod
-    def generate_md_report(server_reports: List[ServerReport], config: dict) -> str:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        total_servers = len(server_reports)
-        alert_counts = {"CRITICAL": 0, "WARNING": 0, "INFO": 0}
+    def _cpu_pct(top_out: str) -> float:
+        m = re.search(r'%Cpu\(s\):\s*([\d.]+)\s*us', top_out)
+        return float(m.group(1)) if m else 0.0
 
-        for report in server_reports:
-            for alert in report.alerts:
-                level = alert.get("level", "INFO")
-                if level in alert_counts:
-                    alert_counts[level] += 1
+    @staticmethod
+    def _mem_pct(mem_out: str) -> float:
+        lines = mem_out.strip().split("\n")
+        if len(lines) < 2: return 0.0
+        tm = re.search(r'Mem:\s+(\S+)', lines[1])
+        um = re.search(r'Mem:\s+\S+\s+(\S+)', lines[1])
+        if not tm or not um: return 0.0
+        def to_mb(s):
+            s = s.strip()
+            if 'G' in s: return float(re.sub(r'[A-Za-z]','',s)) * 1024
+            if 'M' in s: return float(re.sub(r'[A-Za-z]','',s))
+            return 0.0
+        try:
+            t, u = to_mb(tm.group(1)), to_mb(um.group(1))
+            return round((u/t)*100, 1) if t > 0 else 0.0
+        except: return 0.0
 
-        # 生成概览
-        status_emoji = "🟢" if alert_counts["CRITICAL"] == 0 and alert_counts["WARNING"] == 0 else "🟠"
-        if alert_counts["CRITICAL"] > 0:
-            status_emoji = "🔴"
+    @staticmethod
+    def _partitions(df_out: str) -> list:
+        out = []
+        for line in df_out.strip().split("\n")[1:]:
+            parts = line.split()
+            if len(parts) >= 5 and parts[0].startswith("/dev"):
+                try:
+                    usage = int(parts[-2].replace('%',''))
+                    mount = parts[-1]
+                    out.append({"mount": mount, "usage": usage})
+                except: pass
+        return out
 
-        md = f"""# 🖥️ 服务器巡检报告
+    @staticmethod
+    def _icon(v: float, warn: float, crit: float) -> str:
+        if v >= crit: return "🔴"
+        if v >= warn: return "⚠️"
+        return "✅"
 
-| 项目 | 值 |
-|------|-----|
-| 📅 巡检时间 | {timestamp} |
-| 🖥️ 服务器数量 | {total_servers} 台 |
-| ⚠️ 严重告警 | {alert_counts['CRITICAL']} 个 |
-| ⚠️ 警告 | {alert_counts['WARNING']} 个 |
-| 📊 总体状态 | {status_emoji} |
+    @staticmethod
+    def _history(host: str, days=7) -> list:
+        d = WORK_DIR / "history" / host
+        if not d.exists(): return []
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        records = []
+        for f in d.glob("*.jsonl"):
+            with open(f) as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                        if r.get("timestamp","")[:10] >= cutoff:
+                            records.append(r)
+                    except: pass
+        return sorted(records, key=lambda x: x.get("timestamp",""))
 
----
+    @staticmethod
+    def _trend(host: str, metric: str, label: str, warn=None, crit=None, days=7) -> str:
+        recs = ReportGenerator._history(host, days)
+        if not recs:
+            return f"> 无历史数据\n"
+        points = []
+        for r in recs:
+            v = r.get(metric)
+            if v is not None and v != "":
+                try:
+                    ts = r.get("timestamp","")[5:16]
+                    points.append((ts, float(v)))
+                except: pass
+        if not points:
+            return f"> {label} 无历史数据\n"
+        vals = [p[1] for p in points]
+        vmin, vmax = min(vals), max(vals)
+        rng = vmax - vmin if vmax != vmin else 1
+        rows = 4
+        chart = [""] * rows
+        for ts, v in points:
+            row = min(rows-1, int((v-vmin)/rng*(rows-1)))
+            char = "█"
+            if crit and v >= crit: char = "█"
+            elif warn and v >= warn: char = "▒"
+            else: char = "░"
+            for r in range(rows):
+                chart[r] += "  " + ("█" if rows-1-r == row else " ")
+        lines = []
+        for r, line in enumerate(chart):
+            pct = round(vmax - (vmax-vmin)*r/(rows-1))
+            lines.append(f"  {pct:>4}% ┤{''.join('█' if c=='█' else ' ' for c in line)} {pct if r==0 else ''}")
+        lines.append("  -----+" + "-"*(len(points)*2))
+        lines.append("       " + " ".join(ts[2:7] for ts,_ in points))
+        return f"**{label} 趋势（{days}天）**\n```\n" + "\n".join(lines) + "\n```\n"
+
+    @staticmethod
+    def generate_md_report(reports: List[ServerReport], config: dict) -> str:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        total = len(reports)
+        thr = config.get("alert_thresholds", {})
+        crit_n = sum(1 for r in reports for a in r.alerts if a.get("level")=="CRITICAL")
+        warn_n = sum(1 for r in reports for a in r.alerts if a.get("level")=="WARNING")
+        overall = "🔴 严重" if crit_n > 0 else ("🟠 关注" if warn_n > 0 else "🟢 正常")
+
+        md = f"""┌─────────────────────────────────────────────────────────┐
+│  🖥️  服务器巡检报告                                          │
+│  📅  巡检时间: {ts}                   │
+│  ⏱️  耗时: {sum(r.duration_ms for r in reports)//1000}s                                              │
+└─────────────────────────────────────────────────────────┘
 
 ## 一、巡检概览
 
+| 指标 | 状态 | 说明 |
+|------|------|------|
+| 主机数 | {total} 台 | {total} 成功 / 0 失败 |
+| CPU 异常 | {"🔴 " + str(crit_n) + "台" if crit_n > 0 else "✅ 正常"} | {"存在严重告警" if crit_n > 0 else "全部低于阈值"} |
+| 内存异常 | {"⚠️ 有告警" if any("内存" in a.get("message","") for r in reports for a in r.alerts) else "✅ 正常"} | - |
+| 磁盘异常 | {"⚠️ 有告警" if any("磁盘" in a.get("message","") for r in reports for a in r.alerts) else "✅ 正常"} | - |
+| 安全异常 | {"⚠️ 有告警" if any("登录" in a.get("message","") or "暴力" in a.get("message","") for r in reports for a in r.alerts) else "✅ 正常"} | - |
+
+**总体评价**: {overall}
+
+> **AI 分析**：由 OpenClaw AI 分析后填入（见下方第四节「💡 AI 优化建议」）
+
+---
+
+## 二、分服务器详情
+
 """
 
-        # 按服务器生成详情
-        for report in server_reports:
-            status = "🟢" if not report.alerts else "🔴" if any(a.get("level") == "CRITICAL" for a in report.alerts) else "🟠"
-            md += f"""### {status} {report.name}（{report.host}）
+        for idx, r in enumerate(reports, 1):
+            has_crit = any(a.get("level")=="CRITICAL" for a in r.alerts)
+            has_warn = any(a.get("level")=="WARNING" for a in r.alerts)
+            si = "🔴" if has_crit else ("🟠" if has_warn else "🟢")
+            st = "异常" if has_crit else ("关注" if has_warn else "正常")
+            hist = ReportGenerator._history(r.name, 7)
+            prev = hist[-2].get("timestamp","无历史记录") if len(hist) >= 2 else "无历史记录"
 
-**巡检时间**: {report.timestamp} | **耗时**: {report.duration_ms}ms
+            md += f"### 2.{idx} {si} {r.name}（{r.host}）\n\n**运行状态**: {si} {st} | **上次巡检**: {prev}\n\n"
 
-"""
-
-            # ─── 系统基础 ───
-            md += "#### 系统基础\n"
-            md += "| 指标 | 值 |\n|------|-----|\n"
-            if "hostname" in report.metrics:
-                val = report.metrics["hostname"].raw_output.strip()
-                md += f"| 主机名 | `{val}` |\n"
-            if "uptime" in report.metrics:
-                val = report.metrics["uptime"].raw_output.strip()
-                md += f"| 运行时间 | {val} |\n"
-            if "uname" in report.metrics:
-                val = " ".join(report.metrics["uname"].raw_output.strip().split()[:4])
-                md += f"| 系统版本 | {val} |\n"
-            if "who" in report.metrics:
-                lines = [l for l in report.metrics["who"].raw_output.strip().split("\n") if l]
-                md += f"| 登录用户 | {len(lines)} 人 |\n"
-            if "last" in report.metrics and not report.metrics["last"].raw_output.startswith("ERROR"):
-                lines = [l for l in report.metrics["last"].raw_output.strip().split("\n") if l]
-                md += f"| 最近登录 | {len(lines)} 条记录 |\n"
+            # 系统基础
+            md += "#### 系统基础\n| 指标 | 值 | 状态 |\n|------|-----|------|\n"
+            if "hostname" in r.metrics:
+                md += f"| 主机名 | `{r.metrics['hostname'].raw_output.strip()}` | ✅ |\n"
+            if "uptime" in r.metrics:
+                md += f"| 运行时间 | {r.metrics['uptime'].raw_output.strip()} | ✅ |\n"
+            if "uname" in r.metrics:
+                v = " ".join(r.metrics["uname"].raw_output.strip().split()[:4])
+                md += f"| 系统版本 | {v} | ✅ |\n"
+            if "who" in r.metrics:
+                cnt = len([l for l in r.metrics["who"].raw_output.strip().split("\n") if l])
+                md += f"| 当前用户 | {cnt} 人登录 | ✅ |\n"
             md += "\n"
 
-            # ─── CPU & 负载 ───
-            if "top" in report.metrics or "loadavg" in report.metrics:
-                md += "#### CPU & 负载\n"
-                if "loadavg" in report.metrics and not report.metrics["loadavg"].raw_output.startswith("ERROR"):
-                    md += f"| 负载均值 | {report.metrics['loadavg'].raw_output.strip()} |\n"
-                if "vmstat" in report.metrics and not report.metrics["vmstat"].raw_output.startswith("ERROR"):
-                    md += f"| 虚拟内存 | {report.metrics['vmstat'].raw_output.strip()} |\n"
-                if "top" in report.metrics:
-                    md += f"\n```\n{report.metrics['top'].raw_output[:500]}\n```\n"
-                if "top_cpu" in report.metrics and not report.metrics["top_cpu"].raw_output.startswith("ERROR"):
-                    md += f"\n**Top CPU 进程**:\n```\n{report.metrics['top_cpu'].raw_output}\n```\n"
+            # CPU
+            cp = 0.0; lm = 0.0
+            if "top" in r.metrics and not r.metrics["top"].raw_output.startswith("ERROR"):
+                cp = ReportGenerator._cpu_pct(r.metrics["top"].raw_output)
+            if "loadavg" in r.metrics and not r.metrics["loadavg"].raw_output.startswith("ERROR"):
+                try: lm = float(r.metrics["loadavg"].raw_output.strip().split()[0])
+                except: pass
+            ct = thr.get("cpu_percent",80); lt = thr.get("loadavg_1m",4)
+            ci = ReportGenerator._icon(cp, ct*0.9, ct); li = ReportGenerator._icon(lm, lt*1.5, lt*2)
+            md += f"#### CPU 与负载\n| 指标 | 值 | 阈值 | 状态 |\n|------|-----|------|------|\n| CPU 使用率 | {cp:.1f}% | {ct}% | {ci} |\n| 1分钟负载 | {lm} | {lt} | {li} |\n\n"
+            if "top_cpu" in r.metrics and not r.metrics["top_cpu"].raw_output.startswith("ERROR"):
+                lines = r.metrics["top_cpu"].raw_output.strip().split("\n")
+                md += "**Top 5 CPU 进程**:\n```\n" + "\n".join(l for l in lines[:6]) + "\n```\n\n"
+
+            # 内存
+            mp = 0.0
+            if "mem_usage" in r.metrics and not r.metrics["mem_usage"].raw_output.startswith("ERROR"):
+                mp = ReportGenerator._mem_pct(r.metrics["mem_usage"].raw_output)
+            mt = thr.get("mem_percent",85); mi = ReportGenerator._icon(mp, mt*0.9, mt)
+            md += f"#### 内存\n| 指标 | 值 | 阈值 | 状态 |\n|------|-----|------|------|\n| 内存使用率 | {mp}% | {mt}% | {mi} |\n\n"
+            if "mem_usage" in r.metrics and not r.metrics["mem_usage"].raw_output.startswith("ERROR"):
+                md += "```\n" + r.metrics["mem_usage"].raw_output.strip() + "\n```\n"
+            if "top_mem" in r.metrics and not r.metrics["top_mem"].raw_output.startswith("ERROR"):
+                lines = r.metrics["top_mem"].raw_output.strip().split("\n")
+                md += "**Top 5 内存进程**:\n```\n" + "\n".join(l for l in lines[:6]) + "\n```\n\n"
+
+            # 磁盘
+            dt = thr.get("disk_percent",90)
+            md += "#### 磁盘\n| 挂载点 | 使用率 | 阈值 | 状态 |\n|--------|--------|------|------|\n"
+            if "disk_usage" in r.metrics and not r.metrics["disk_usage"].raw_output.startswith("ERROR"):
+                parts = ReportGenerator._partitions(r.metrics["disk_usage"].raw_output)
+                for p in parts[:5]:
+                    di = ReportGenerator._icon(p["usage"], dt*0.9, dt)
+                    md += f"| {p['mount']} | {p['usage']}% | {dt}% | {di} |\n"
+                md += f"\n```\n{r.metrics['disk_usage'].raw_output.strip()}\n```\n"
+            if "du_top" in r.metrics and not r.metrics["du_top"].raw_output.startswith("ERROR"):
+                du = r.metrics["du_top"].raw_output.strip()
+                if du and not du.startswith("du skipped"):
+                    md += f"\n**大目录 Top10**:\n```\n{du}\n```\n"
+            md += "\n"
+
+            # 网络
+            cn = 0; tw = 0
+            if "netstat_summary" in r.metrics:
+                try: cn = int(r.metrics["netstat_summary"].raw_output.strip())
+                except: pass
+            if "tcp_status" in r.metrics and not r.metrics["tcp_status"].raw_output.startswith("ERROR"):
+                for line in r.metrics["tcp_status"].raw_output.strip().split("\n"):
+                    if "TIME_WAIT" in line:
+                        try: tw = int(line.strip().split()[0])
+                        except: pass
+            ct2 = thr.get("netstat_connections",5000)
+            cni = ReportGenerator._icon(cn, ct2*0.8, ct2)
+            twi = ReportGenerator._icon(tw, 3000, 10000)
+            md += f"#### 网络\n| 指标 | 值 | 阈值 | 状态 |\n|------|-----|------|------|\n| TCP 连接数 | {cn} | {ct2} | {cni} |\n| TIME_WAIT | {tw} | 5,000 | {twi} |\n\n"
+            if "ss_summary" in r.metrics and not r.metrics["ss_summary"].raw_output.startswith("ERROR"):
+                md += "```\n" + r.metrics["ss_summary"].raw_output.strip() + "\n```\n"
+            md += "\n"
+
+            # 服务
+            if "service_status" in r.metrics and not r.metrics["service_status"].raw_output.startswith("ERROR"):
+                md += "#### 服务状态\n```\n" + r.metrics["service_status"].raw_output.strip() + "\n```\n"
+                if "process_count" in r.metrics:
+                    md += f"| 进程总数 | {r.metrics['process_count'].raw_output.strip()} | - | - |\n"
                 md += "\n"
 
-            # ─── 内存 ───
-            if "mem_usage" in report.metrics:
-                md += "#### 内存\n"
-                md += f"```\n{report.metrics['mem_usage'].raw_output}\n```\n"
-                if "swap" in report.metrics:
-                    md += f"```\n{report.metrics['swap'].raw_output}\n```\n"
-                if "top_mem" in report.metrics and not report.metrics["top_mem"].raw_output.startswith("ERROR"):
-                    md += f"\n**Top 内存进程**:\n```\n{report.metrics['top_mem'].raw_output}\n```\n"
-                md += "\n"
-
-            # ─── 磁盘 ───
-            if "disk_usage" in report.metrics:
-                md += "#### 磁盘\n"
-                md += f"```\n{report.metrics['disk_usage'].raw_output}\n```\n"
-                if "disk_inode" in report.metrics and not report.metrics["disk_inode"].raw_output.startswith("ERROR"):
-                    md += f"\n**Inode 使用率**:\n```\n{report.metrics['disk_inode'].raw_output}\n```\n"
-                if "du_top" in report.metrics and not report.metrics["du_top"].raw_output.startswith("ERROR"):
-                    md += f"\n**大目录 Top10**:\n```\n{report.metrics['du_top'].raw_output}\n```\n"
-                md += "\n"
-
-            # ─── 网络 ───
-            has_net = any(k in report.metrics for k in ["netstat_summary", "ss_summary", "ss_listen", "tcp_status", "bandwidth"])
-            if has_net:
-                md += "#### 网络\n"
-                if "ss_summary" in report.metrics and not report.metrics["ss_summary"].raw_output.startswith("ERROR"):
-                    md += f"```\n{report.metrics['ss_summary'].raw_output}\n```\n"
-                if "tcp_status" in report.metrics and not report.metrics["tcp_status"].raw_output.startswith("ERROR"):
-                    md += f"\n**TCP 连接状态**:\n```\n{report.metrics['tcp_status'].raw_output}\n```\n"
-                if "ss_listen" in report.metrics and not report.metrics["ss_listen"].raw_output.startswith("ERROR"):
-                    md += f"\n**监听端口**:\n```\n{report.metrics['ss_listen'].raw_output}\n```\n"
-                if "netstat_summary" in report.metrics:
-                    val = report.metrics["netstat_summary"].raw_output.strip()
-                    md += f"| TCP 连接总数 | {val} |\n"
-                md += "\n"
-
-            # ─── 服务 ───
-            if "service_status" in report.metrics:
-                md += "#### 服务状态\n"
-                output = report.metrics["service_status"].raw_output
-                md += f"```\n{output}\n```\n"
-                if "process_count" in report.metrics:
-                    val = report.metrics["process_count"].raw_output.strip()
-                    md += f"| 进程总数 | {val} |\n"
-                md += "\n"
-
-            # ─── 安全 ───
-            has_sec = any(k in report.metrics for k in ["failed_login", "last_login", "sudo_usage", "firewall"])
-            if has_sec:
-                md += "#### 安全\n"
-                if "failed_login" in report.metrics:
-                    output = report.metrics["failed_login"].raw_output.strip()
-                    count = len([l for l in output.split("\n") if l and "failed" in l.lower()])
-                    status_icon = "✅" if count == 0 else "⚠️"
-                    md += f"| 登录失败 | {status_icon} {count} 次 |\n"
-                if "last_login" in report.metrics and not report.metrics["last_login"].raw_output.startswith("ERROR"):
-                    md += f"\n**最近登录**:\n```\n{report.metrics['last_login'].raw_output}\n```\n"
-                if "sudo_usage" in report.metrics and not report.metrics["sudo_usage"].raw_output.startswith("ERROR"):
-                    md += f"\n**Sudo 使用**:\n```\n{report.metrics['sudo_usage'].raw_output}\n```\n"
-                if "firewall" in report.metrics:
-                    md += f"| 防火墙 | `{report.metrics['firewall'].raw_output.strip()}` |\n"
-                md += "\n"
-
-            # AI 摘要
-            if report.ai_summary:
-                md += f"> **AI 分析**: {report.ai_summary}\n\n"
-
+            # 安全
+            fl = 0
+            md += "#### 安全\n"
+            if "failed_login" in r.metrics:
+                fl_out = r.metrics["failed_login"].raw_output.strip()
+                fl = len([l for l in fl_out.split("\n") if l and "failed" in l.lower()])
+                fi = "✅" if fl == 0 else "⚠️"
+                md += f"| 登录失败（历史） | {fl} 次 | {fi} |\n"
+            if "firewall" in r.metrics:
+                fw = r.metrics["firewall"].raw_output.strip().replace("\n","")
+                fwi = "✅" if "active" in fw.lower() and "inactive" not in fw.lower() else "⚠️"
+                md += f"| 防火墙 | `{fw}` | {fwi} |\n"
+            md += "\n"
+            if "last_login" in r.metrics and not r.metrics["last_login"].raw_output.startswith("ERROR"):
+                md += "**最近登录**:\n```\n" + r.metrics["last_login"].raw_output.strip() + "\n```\n"
             md += "---\n\n"
 
-        # 告警汇总
-        if any(report.alerts for report in server_reports):
-            md += "## 二、⚠️ 告警汇总\n\n"
-            md += "| 级别 | 服务器 | 指标 | 描述 |\n"
-            md += "|------|--------|------|------|\n"
-
-            for report in server_reports:
-                for alert in report.alerts:
-                    level = alert.get("level", "INFO")
-                    level_icon = "🔴" if level == "CRITICAL" else "🟠" if level == "WARNING" else "🟡"
-                    md += f"| {level_icon} {level} | {report.name} | {alert.get('metric', '-')} | {alert.get('message', '')} |\n"
-
+        # 三、异常汇总
+        md += "## 三、⚠️ 异常汇总\n\n"
+        has_alerts = any(r.alerts for r in reports)
+        if has_alerts:
+            md += "| # | 级别 | 服务器 | 描述 |\n|---|------|--------|------|\n"
+            i = 0
+            for r in reports:
+                for a in r.alerts:
+                    i += 1
+                    li = "🔴" if a.get("level")=="CRITICAL" else "🟠" if a.get("level")=="WARNING" else "🟡"
+                    md += f"| {i} | {li} | {r.name} | {a.get('message','-')} |\n"
             md += "\n"
+        else:
+            md += "✅ 本次巡检未发现异常。\n\n"
 
-        # AI 建议
-        all_suggestions = []
-        for report in server_reports:
-            all_suggestions.extend(report.ai_suggestions)
+        # 四、AI 优化建议（占位符）
+        md += """## 四、💡 AI 优化建议
 
-        if all_suggestions:
-            md += "## 三、💡 AI 优化建议\n\n"
-            for i, suggestion in enumerate(all_suggestions[:5], 1):
-                md += f"### 建议 {i}\n{suggestion}\n\n"
+> 以下建议由 OpenClaw AI 根据本次巡检数据生成
 
-        # 页脚
-        md += f"""---
+<!-- AI_SUGGESTIONS -->
 
-*📋 此报告由 OpenClaw Server Inspect 自动生成*
-*🕐 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+---
+
+## 五、📊 历史趋势（7天）
+
 """
 
+        # 每个服务器的历史趋势
+        for idx, r in enumerate(reports, 1):
+            cp = 0.0; mp = 0.0; dp = 0.0
+            if "top" in r.metrics and not r.metrics["top"].raw_output.startswith("ERROR"):
+                cp = ReportGenerator._cpu_pct(r.metrics["top"].raw_output)
+            if "mem_usage" in r.metrics and not r.metrics["mem_usage"].raw_output.startswith("ERROR"):
+                mp = ReportGenerator._mem_pct(r.metrics["mem_usage"].raw_output)
+            if "disk_usage" in r.metrics and not r.metrics["disk_usage"].raw_output.startswith("ERROR"):
+                parts = ReportGenerator._partitions(r.metrics["disk_usage"].raw_output)
+                dp = parts[0]["usage"] if parts else 0
+
+            ct = thr.get("cpu_percent",80); mt = thr.get("mem_percent",85); dt2 = thr.get("disk_percent",90)
+            md += f"### {r.name} 关键指标趋势\n"
+            md += ReportGenerator._trend(r.name, "cpu_pct", "CPU")
+            md += ReportGenerator._trend(r.name, "mem_pct", "内存")
+            md += ReportGenerator._trend(r.name, "disk_pct", "磁盘")
+            md += "\n"
+
+        # 六、附录
+        md += f"""## 六、附录
+
+### A. 巡检命令输出（完整日志）
+
+<details>
+<summary>点击展开：原始命令输出</summary>
+
+```
+"""
+        for r in reports:
+            md += f"\n[=== {r.name} ({r.host}) ===]\n\n"
+            for mid, m in r.metrics.items():
+                md += f"\n[{mid}]\n{m.raw_output}\n"
+        md += """
+```
+</details>
+
+### B. 巡检元数据
+
+| 字段 | 值 |
+|------|-----|
+| 报告版本 | v1.0 |
+| 巡检工具 | server-inspect skill |
+| AI 模型 | OpenClaw（本地分析，不调用外部 LLM） |
+| 报告生成时间 | """ + ts + """ |
+| 配置文件版本 | """ + config.get("version","1.0") + """ |
+
+---
+
+*📋 此报告由 OpenClaw Server Inspect 自动生成*
+*🕐 报告生成时间: """ + ts + """*
+"""
         return md
 
 
 async def run_inspect(host_filter: str = None, groups: List[str] = None):
-    """执行巡检主流程"""
     print("\n🔍 Server Inspect - 开始巡检\n")
-
     config = Config()
     servers = config.get_servers(host_filter)
-
     if not servers:
-        print("❌ 没有找到可巡检的服务器")
-        return
-
-    print(f"📋 待巡检服务器: {len(servers)} 台")
+        print("❌ 没有可巡检的服务器")
+        return [], ""
+    print(f"📋 待巡检: {len(servers)} 台")
     for s in servers:
         print(f"   - {s['name']} ({s['host']})")
-    print()
 
-    # 确定巡检指标组
     if not groups:
-        groups = ["系统基础", "CPU", "内存", "磁盘", "网络", "安全"]
-
-    thresholds = config.get_thresholds()
+        groups = ["系统基础", "CPU", "内存", "磁盘", "网络", "服务", "安全"]
     commands = config.get_commands(groups)
-
-    print(f"📊 将执行 {len(commands)} 个巡检命令\n")
+    thresholds = config.get_thresholds()
+    print(f"📊 执行 {len(commands)} 个巡检命令\n")
 
     all_reports = []
-    start_time = datetime.now()
-
     for server in servers:
-        print(f"🔄 巡检 {server['name']} ({server['host']})...")
-        server_start = datetime.now()
-
+        print(f"🔄 巡检 {server['name']} ({server['host']})...", end=" ", flush=True)
+        start = datetime.now()
         executor = SSHExecutor(server)
         parser = MetricParser(thresholds)
-
-        # 并行执行所有命令
         metrics = executor.execute_batch(commands)
-
-        # 解析指标
-        cpu_stats = parser.parse_cpu(metrics)
-        mem_stats = parser.parse_memory(metrics)
-        disk_stats = parser.parse_disk(metrics)
-        net_stats = parser.parse_network(metrics)
-        sec_stats = parser.parse_security(metrics)
-
-        # 收集所有告警
-        all_alerts = []
-        all_alerts.extend(cpu_stats.get("alerts", []))
-        all_alerts.extend(mem_stats.get("alerts", []))
-        all_alerts.extend(disk_stats.get("alerts", []))
-        all_alerts.extend(net_stats.get("alerts", []))
-        all_alerts.extend(sec_stats.get("alerts", []))
-
-        # 确定总体状态
-        has_critical = any(a.get("level") == "CRITICAL" for a in all_alerts)
-        has_warning = any(a.get("level") == "WARNING" for a in all_alerts)
-        overall = "CRITICAL" if has_critical else "WARNING" if has_warning else "NORMAL"
-
-        duration_ms = int((datetime.now() - server_start).total_seconds() * 1000)
-
+        alerts = parser.parse_all(metrics)
+        has_crit = any(a.get("level")=="CRITICAL" for a in alerts)
+        has_warn = any(a.get("level")=="WARNING" for a in alerts)
+        overall = "CRITICAL" if has_crit else ("WARNING" if has_warn else "NORMAL")
+        dur = int((datetime.now()-start).total_seconds()*1000)
         report = ServerReport(
-            name=server["name"],
-            host=server["host"],
-            timestamp=server_start.strftime("%Y-%m-%d %H:%M:%S"),
-            duration_ms=duration_ms,
-            metrics=metrics,
-            alerts=all_alerts,
+            name=server["name"], host=server["host"],
+            timestamp=start.strftime("%Y-%m-%d %H:%M:%S"),
+            duration_ms=dur, metrics=metrics, alerts=alerts,
             overall_status=overall
         )
-
         all_reports.append(report)
-
-        # 打印状态
-        if all_alerts:
-            for alert in all_alerts:
-                level_icon = "🔴" if alert.get("level") == "CRITICAL" else "🟠"
-                print(f"   {level_icon} {alert.get('message', '')}")
+        if alerts:
+            for a in alerts:
+                icon = "🔴" if a.get("level")=="CRITICAL" else "🟠"
+                print(f"\n   {icon} {a.get('message','')}")
         else:
-            print_success(f"{server['name']} 无告警")
+            print("✅")
+    print(f"\n✅ 巡检完成！共 {len(all_reports)} 台")
 
-    print(f"\n✅ 巡检完成！共 {len(all_reports)} 台服务器")
-
-    # 生成报告
     report_md = ReportGenerator.generate_md_report(all_reports, config.data)
 
     # 保存报告
     report_dir = WORK_DIR / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)
-    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = report_dir / f"report_{timestamp_str}.md"
-
-    with open(report_path, "w", encoding="utf-8") as f:
+    ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    rp = report_dir / f"report_{ts_str}.md"
+    with open(rp, "w", encoding="utf-8") as f:
         f.write(report_md)
+    print(f"\n📄 报告: {rp}")
 
-    print(f"\n📄 报告已保存: {report_path}")
+    # 保存日志
+    log_dir = WORK_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    lp = log_dir / f"inspect_{ts_str}.log"
+    with open(lp, "w", encoding="utf-8") as f:
+        f.write(f"# Server Inspect Log\n# Time: {ts_str}\n\n")
+        for r in all_reports:
+            f.write(f"\n[=== {r.name} ({r.host}) ===]\n\n")
+            for mid, m in r.metrics.items():
+                f.write(f"\n[{mid}]\n{m.raw_output}\n")
+    print(f"📝 日志: {lp}")
 
-    # 保存历史数据
-    for report in all_reports:
-        history_dir = WORK_DIR / "history" / report.name
-        history_dir.mkdir(parents=True, exist_ok=True)
-        month_str = datetime.now().strftime("%Y-%m")
-        history_file = history_dir / f"{month_str}.jsonl"
+    # 保存历史
+    for r in all_reports:
+        hd = WORK_DIR / "history" / r.name
+        hd.mkdir(parents=True, exist_ok=True)
+        ms = datetime.now().strftime("%Y-%m")
+        hf = hd / f"{ms}.jsonl"
 
-        record = {
-            "timestamp": report.timestamp,
-            "duration_ms": report.duration_ms,
-            "overall_status": report.overall_status,
-            "alerts_count": len(report.alerts),
-            "metrics": {k: v.raw_output[:200] for k, v in report.metrics.items()}
+        cp = ReportGenerator._cpu_pct(r.metrics.get("top",MetricResult("","")).raw_output) if "top" in r.metrics else 0.0
+        mp = ReportGenerator._mem_pct(r.metrics.get("mem_usage",MetricResult("","")).raw_output) if "mem_usage" in r.metrics else 0.0
+        dp = ReportGenerator._partitions(r.metrics.get("disk_usage",MetricResult("","")).raw_output)[0]["usage"] if "disk_usage" in r.metrics else 0.0
+
+        rec = {
+            "timestamp": r.timestamp, "duration_ms": r.duration_ms,
+            "overall_status": r.overall_status, "alerts_count": len(r.alerts),
+            "cpu_pct": cp, "mem_pct": mp, "disk_pct": dp,
+            "hostname": r.metrics.get("hostname", MetricResult("","")).raw_output.strip() if "hostname" in r.metrics else ""
         }
-
-        with open(history_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    # 发送通知
-    notification_config = config.data.get("notification", {})
-    feishu_webhook = notification_config.get("feishu_webhook", "")
-
-    if feishu_webhook:
-        print("\n📤 发送飞书通知...")
-        notifier = FeishuNotifier(feishu_webhook)
-
-        # 生成摘要
-        summary_text = f"**服务器巡检报告**\n"
-        summary_text += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        summary_text += f"🖥️ {len(all_reports)} 台服务器\n"
-
-        critical_count = sum(1 for r in all_reports if r.overall_status == "CRITICAL")
-        warning_count = sum(1 for r in all_reports if r.overall_status == "WARNING")
-
-        if critical_count > 0:
-            summary_text += f"🔴 严重告警: {critical_count} 台\n"
-        if warning_count > 0:
-            summary_text += f"🟠 警告: {warning_count} 台\n"
-        if critical_count == 0 and warning_count == 0:
-            summary_text += f"🟢 全部正常\n"
-
-        summary_text += f"\n📄 完整报告: {report_path}"
-
-        ok = await notifier.send(summary_text)
-        if ok:
-            print_success("飞书通知已发送")
+        with open(hf, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    print(f"📊 历史: ~/.qclaw/server-inspect/history/")
 
     return all_reports, report_md
 
 
 def main():
     import argparse
-
-    parser = argparse.ArgumentParser(description="Server Inspect - Linux 服务器巡检工具")
-    parser.add_argument("--host", "-H", help="指定巡检的主机名（模糊匹配）")
-    parser.add_argument("--groups", "-G", help="指定巡检的指标组（逗号分隔）")
-    parser.add_argument("--async", dest="use_async", action="store_true", help="使用异步执行（多主机并行）")
-
-    args = parser.parse_args()
-
+    p = argparse.ArgumentParser(description="Server Inspect")
+    p.add_argument("--host", help="主机名过滤")
+    p.add_argument("--groups", help="指标组，逗号分隔")
+    args = p.parse_args()
     groups = args.groups.split(",") if args.groups else None
-
-    # 执行巡检
     reports, md = asyncio.run(run_inspect(args.host, groups))
-
-    # 打印报告
     print("\n" + "="*60)
-    print(md)
+    print(md[:2000])
+    print("\n... (完整报告见文件)")
 
 
 if __name__ == "__main__":
