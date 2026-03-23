@@ -19,7 +19,7 @@ try:
 except ImportError:
     HAS_AIOHTTP = False
 
-WORK_DIR = Path.home() / ".qclaw" / "server-inspect"
+WORK_DIR = Path.home() / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
 
 
@@ -648,7 +648,7 @@ async def run_inspect(host_filter: str = None, groups: List[str] = None):
         }
         with open(hf, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-    print(f"📊 历史: ~/.qclaw/server-inspect/history/")
+    print(f"📊 历史: ~/server-inspect/history/")
 
     return all_reports, report_md
 
