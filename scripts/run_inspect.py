@@ -523,32 +523,100 @@ class ReportGenerator:
 
 """
 
-            # 系统基础
+            # ─── 系统基础 ───
+            md += "#### 系统基础\n"
             md += "| 指标 | 值 |\n|------|-----|\n"
             if "hostname" in report.metrics:
-                md += f"| 主机名 | `{report.metrics['hostname'].raw_output.strip()}` |\n"
+                val = report.metrics["hostname"].raw_output.strip()
+                md += f"| 主机名 | `{val}` |\n"
             if "uptime" in report.metrics:
-                md += f"| 运行时间 | {report.metrics['uptime'].raw_output.strip()} |\n"
+                val = report.metrics["uptime"].raw_output.strip()
+                md += f"| 运行时间 | {val} |\n"
+            if "uname" in report.metrics:
+                val = " ".join(report.metrics["uname"].raw_output.strip().split()[:4])
+                md += f"| 系统版本 | {val} |\n"
             if "who" in report.metrics:
-                user_count = len([l for l in report.metrics['who'].raw_output.strip().split('\n') if l])
-                md += f"| 登录用户 | {user_count} 人 |\n"
-
+                lines = [l for l in report.metrics["who"].raw_output.strip().split("\n") if l]
+                md += f"| 登录用户 | {len(lines)} 人 |\n"
+            if "last" in report.metrics and not report.metrics["last"].raw_output.startswith("ERROR"):
+                lines = [l for l in report.metrics["last"].raw_output.strip().split("\n") if l]
+                md += f"| 最近登录 | {len(lines)} 条记录 |\n"
             md += "\n"
 
-            # CPU
+            # ─── CPU & 负载 ───
             if "top" in report.metrics or "loadavg" in report.metrics:
-                cpu_info = "（见原始输出）"
-                md += f"#### CPU & 负载\n{cpu_info}\n\n"
+                md += "#### CPU & 负载\n"
+                if "loadavg" in report.metrics and not report.metrics["loadavg"].raw_output.startswith("ERROR"):
+                    md += f"| 负载均值 | {report.metrics['loadavg'].raw_output.strip()} |\n"
+                if "vmstat" in report.metrics and not report.metrics["vmstat"].raw_output.startswith("ERROR"):
+                    md += f"| 虚拟内存 | {report.metrics['vmstat'].raw_output.strip()} |\n"
+                if "top" in report.metrics:
+                    md += f"\n```\n{report.metrics['top'].raw_output[:500]}\n```\n"
+                if "top_cpu" in report.metrics and not report.metrics["top_cpu"].raw_output.startswith("ERROR"):
+                    md += f"\n**Top CPU 进程**:\n```\n{report.metrics['top_cpu'].raw_output}\n```\n"
+                md += "\n"
 
-            # 内存
+            # ─── 内存 ───
             if "mem_usage" in report.metrics:
                 md += "#### 内存\n"
-                md += f"```\n{report.metrics['mem_usage'].raw_output}\n```\n\n"
+                md += f"```\n{report.metrics['mem_usage'].raw_output}\n```\n"
+                if "swap" in report.metrics:
+                    md += f"```\n{report.metrics['swap'].raw_output}\n```\n"
+                if "top_mem" in report.metrics and not report.metrics["top_mem"].raw_output.startswith("ERROR"):
+                    md += f"\n**Top 内存进程**:\n```\n{report.metrics['top_mem'].raw_output}\n```\n"
+                md += "\n"
 
-            # 磁盘
+            # ─── 磁盘 ───
             if "disk_usage" in report.metrics:
                 md += "#### 磁盘\n"
-                md += f"```\n{report.metrics['disk_usage'].raw_output}\n```\n\n"
+                md += f"```\n{report.metrics['disk_usage'].raw_output}\n```\n"
+                if "disk_inode" in report.metrics and not report.metrics["disk_inode"].raw_output.startswith("ERROR"):
+                    md += f"\n**Inode 使用率**:\n```\n{report.metrics['disk_inode'].raw_output}\n```\n"
+                if "du_top" in report.metrics and not report.metrics["du_top"].raw_output.startswith("ERROR"):
+                    md += f"\n**大目录 Top10**:\n```\n{report.metrics['du_top'].raw_output}\n```\n"
+                md += "\n"
+
+            # ─── 网络 ───
+            has_net = any(k in report.metrics for k in ["netstat_summary", "ss_summary", "ss_listen", "tcp_status", "bandwidth"])
+            if has_net:
+                md += "#### 网络\n"
+                if "ss_summary" in report.metrics and not report.metrics["ss_summary"].raw_output.startswith("ERROR"):
+                    md += f"```\n{report.metrics['ss_summary'].raw_output}\n```\n"
+                if "tcp_status" in report.metrics and not report.metrics["tcp_status"].raw_output.startswith("ERROR"):
+                    md += f"\n**TCP 连接状态**:\n```\n{report.metrics['tcp_status'].raw_output}\n```\n"
+                if "ss_listen" in report.metrics and not report.metrics["ss_listen"].raw_output.startswith("ERROR"):
+                    md += f"\n**监听端口**:\n```\n{report.metrics['ss_listen'].raw_output}\n```\n"
+                if "netstat_summary" in report.metrics:
+                    val = report.metrics["netstat_summary"].raw_output.strip()
+                    md += f"| TCP 连接总数 | {val} |\n"
+                md += "\n"
+
+            # ─── 服务 ───
+            if "service_status" in report.metrics:
+                md += "#### 服务状态\n"
+                output = report.metrics["service_status"].raw_output
+                md += f"```\n{output}\n```\n"
+                if "process_count" in report.metrics:
+                    val = report.metrics["process_count"].raw_output.strip()
+                    md += f"| 进程总数 | {val} |\n"
+                md += "\n"
+
+            # ─── 安全 ───
+            has_sec = any(k in report.metrics for k in ["failed_login", "last_login", "sudo_usage", "firewall"])
+            if has_sec:
+                md += "#### 安全\n"
+                if "failed_login" in report.metrics:
+                    output = report.metrics["failed_login"].raw_output.strip()
+                    count = len([l for l in output.split("\n") if l and "failed" in l.lower()])
+                    status_icon = "✅" if count == 0 else "⚠️"
+                    md += f"| 登录失败 | {status_icon} {count} 次 |\n"
+                if "last_login" in report.metrics and not report.metrics["last_login"].raw_output.startswith("ERROR"):
+                    md += f"\n**最近登录**:\n```\n{report.metrics['last_login'].raw_output}\n```\n"
+                if "sudo_usage" in report.metrics and not report.metrics["sudo_usage"].raw_output.startswith("ERROR"):
+                    md += f"\n**Sudo 使用**:\n```\n{report.metrics['sudo_usage'].raw_output}\n```\n"
+                if "firewall" in report.metrics:
+                    md += f"| 防火墙 | `{report.metrics['firewall'].raw_output.strip()}` |\n"
+                md += "\n"
 
             # AI 摘要
             if report.ai_summary:
