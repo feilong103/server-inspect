@@ -74,7 +74,9 @@ class FeishuNotifier:
                 st = "🟠 关注"
             else:
                 st = "🟢 正常"
-            lines.append(f"| {r.name} | {cpu_i} {cp:.0f}% | {mem_i} {mp:.0f}% | {disk_i} {dp:.0f}% | {safe_i} | {st} |")
+            # 用反引号包裹主机名，避免括号等特殊字符导致 markdown 表格解析错误
+            name = f"`{r.name}`" if r.name else "`未知`"
+            lines.append(f"| {name} | {cpu_i} {cp:.0f}% | {mem_i} {mp:.0f}% | {disk_i} {dp:.0f}% | {safe_i} | {st} |")
         return "\n".join(lines)
 
     @staticmethod
