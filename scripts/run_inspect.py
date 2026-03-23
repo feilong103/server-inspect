@@ -23,6 +23,153 @@ WORK_DIR = Path.home() / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
 
 
+# ==================== 飞书通知 ====================
+class FeishuNotifier:
+    """飞书卡片通知"""
+
+    STATUS_COLOR = {
+        "green":  {"header": "🟢 正常",   "template": "green"},
+        "yellow": {"header": "🟡 关注",   "template": "yellow"},
+        "red":    {"header": "🔴 严重",   "template": "red"},
+    }
+
+    @staticmethod
+    def _status_icon(value: float, warn: float, crit: float) -> str:
+        if value >= crit: return "🔴"
+        if value >= warn: return "🟠"
+        return "✅"
+
+    @staticmethod
+    def _overall_status(reports: list) -> dict:
+        """根据告警情况返回卡片颜色和状态"""
+        has_crit = any(a.get("level") == "CRITICAL" for r in reports for a in r.alerts)
+        has_warn = any(a.get("level") == "WARNING" for r in reports for a in r.alerts)
+        if has_crit:
+            return FeishuNotifier.STATUS_COLOR["red"]
+        elif has_warn:
+            return FeishuNotifier.STATUS_COLOR["yellow"]
+        else:
+            return FeishuNotifier.STATUS_COLOR["green"]
+
+    @staticmethod
+    def _server_table(reports: list, thresholds: dict) -> str:
+        """生成多主机巡检结果表格"""
+        lines = ["| 主机 | CPU | 内存 | 磁盘 | 安全 | 状态 |",
+                 "| --- | --- | --- | --- | --- | --- |"]
+        for r in reports:
+            cp = ReportGenerator._cpu_pct(r.metrics.get("top", MetricResult("", "")).raw_output) if "top" in r.metrics else 0.0
+            mp = ReportGenerator._mem_pct(r.metrics.get("mem_usage", MetricResult("", "")).raw_output) if "mem_usage" in r.metrics else 0.0
+            parts = ReportGenerator._partitions(r.metrics.get("disk_usage", MetricResult("", "")).raw_output) if "disk_usage" in r.metrics else []
+            dp = parts[0]["usage"] if parts else 0
+            ct, mt, dt = thresholds.get("cpu_percent", 80), thresholds.get("mem_percent", 85), thresholds.get("disk_percent", 90)
+            cpu_i, mem_i = FeishuNotifier._status_icon(cp, ct * 0.9, ct), FeishuNotifier._status_icon(mp, mt * 0.9, mt)
+            disk_i = FeishuNotifier._status_icon(dp, dt * 0.9, dt)
+            has_login = any("登录" in a.get("message", "") for a in r.alerts)
+            safe_i = "⚠️" if has_login else "✅"
+            has_crit = any(a.get("level") == "CRITICAL" for a in r.alerts)
+            has_warn = any(a.get("level") == "WARNING" for a in r.alerts)
+            if has_crit:
+                st = "🔴 严重"
+            elif has_warn:
+                st = "🟠 关注"
+            else:
+                st = "🟢 正常"
+            lines.append(f"| {r.name} | {cpu_i} {cp:.0f}% | {mem_i} {mp:.0f}% | {disk_i} {dp:.0f}% | {safe_i} | {st} |")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _alerts_text(reports: list) -> str:
+        """生成需要关注的问题列表"""
+        lines = []
+        for r in reports:
+            for a in r.alerts:
+                icon = "🔴" if a.get("level") == "CRITICAL" else "🟠"
+                lines.append(f"{icon} **{r.name}** {a.get('message', '')}")
+        return "\n".join(lines) if lines else "✅ 本次巡检未发现异常"
+
+    @staticmethod
+    def _ai_suggestions(reports: list) -> str:
+        """生成 AI 建议（占位，AI 分析后替换）"""
+        suggestions = []
+        for r in reports:
+            for a in r.alerts:
+                if a.get("level") == "CRITICAL":
+                    suggestions.append(f"1. 紧急处理 {r.name}：{a.get('message', '')}")
+                    break
+        for r in reports:
+            for a in r.alerts:
+                if a.get("level") == "WARNING":
+                    suggestions.append(f"2. 关注 {r.name}：{a.get('message', '')}")
+                    break
+        return "\n".join(suggestions[:3]) if suggestions else "继续保持，当前状态良好"
+
+    @staticmethod
+    def send(webhook_url: str, reports: list, thresholds: dict, report_path: str):
+        """发送飞书卡片通知"""
+        if not webhook_url or webhook_url.strip() == "":
+            return
+        ts = datetime.now().strftime("%Y-%m-%d")
+        status_info = FeishuNotifier._overall_status(reports)
+        total_time = sum(r.duration_ms for r in reports) // 1000
+
+        payload = {
+            "msg_type": "interactive",
+            "card": {
+                "schema": "2.0",
+                "header": {
+                    "title": {"tag": "plain_text", "content": f"🖥️ 服务器巡检报告 - {ts}"},
+                    "template": status_info["template"]
+                },
+                "body": {
+                    "elements": [
+                        {
+                            "tag": "div",
+                            "text": {
+                                "tag": "lark_md",
+                                "content": f"**巡检时间** {ts} {datetime.now().strftime('%H:%M:%S')}　｜　**耗时** {total_time}s　｜　**服务器数量** {len(reports)} 台"
+                            }
+                        },
+                        {"tag": "hr"},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": "**📊 巡检结果概览（多主机列表）**"}},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": FeishuNotifier._server_table(reports, thresholds)}},
+                        {"tag": "hr"},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": "**⚠️ 需要关注的问题**"}},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": FeishuNotifier._alerts_text(reports)}},
+                        {"tag": "hr"},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": "**💡 AI 建议**"}},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": FeishuNotifier._ai_suggestions(reports)}},
+                        {"tag": "hr"},
+                        {"tag": "div", "text": {"tag": "lark_md", "content": f"<font color=\"grey\">📄 完整报告已保存至 {report_path}</font>"}}
+                    ]
+                }
+            }
+        }
+        try:
+            if HAS_AIOHTTP:
+                async def post_async():
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                            return await resp.json()
+                import json as _json
+                result = asyncio.run(post_async())
+                if result.get("code") == 0:
+                    print("📮 飞书通知已发送")
+                else:
+                    print(f"⚠️ 飞书通知失败: {result.get('msg')}")
+            else:
+                import urllib.request
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    result = json.loads(resp.read().decode("utf-8"))
+                    if result.get("code") == 0:
+                        print("📮 飞书通知已发送")
+                    else:
+                        print(f"⚠️ 飞书通知失败: {result.get('msg')}")
+        except Exception as e:
+            print(f"⚠️ 飞书通知异常: {e}")
+
+
 @dataclass
 class MetricResult:
     metric_id: str
@@ -649,6 +796,12 @@ async def run_inspect(host_filter: str = None, groups: List[str] = None):
         with open(hf, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     print(f"📊 历史: ~/server-inspect/history/")
+
+    # 飞书通知
+    notification = config.data.get("notification", {})
+    webhook = notification.get("feishu_webhook", "")
+    if webhook:
+        FeishuNotifier.send(webhook, all_reports, thresholds, str(rp))
 
     return all_reports, report_md
 
