@@ -10,7 +10,6 @@ import json
 import sys
 import subprocess
 import asyncio
-import aiohttp
 import smtplib
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +19,13 @@ from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+
+# 可选依赖
+try:
+    import aiohttp
+    HAS_AIOHTTP = True
+except ImportError:
+    HAS_AIOHTTP = False
 
 WORK_DIR = Path.home() / ".qclaw" / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
@@ -202,10 +208,14 @@ class MetricParser:
         # 解析负载
         if "loadavg" in metrics:
             loadavg = metrics["loadavg"].raw_output.strip()
-            parts = loadavg.split()
-            if len(parts) >= 3:
-                result["load_1m"] = float(parts[0])
-                result["load_5m"] = float(parts[1])
+            if not loadavg.startswith("ERROR"):
+                parts = loadavg.split()
+                if len(parts) >= 3:
+                    try:
+                        result["load_1m"] = float(parts[0])
+                        result["load_5m"] = float(parts[1])
+                    except ValueError:
+                        pass
 
         # 告警判断
         threshold = self.thresholds.get("cpu_percent", 80)
@@ -240,32 +250,33 @@ class MetricParser:
 
         if "mem_usage" in metrics:
             output = metrics["mem_usage"].raw_output
-            # 解析 free -h 输出
-            lines = output.strip().split("\n")
-            if len(lines) >= 2:
-                # Mem: 行
-                mem_match = re.search(r'Mem:\s*([\d.]+[GMK]?)\s+([\d.]+[GMK]?)\s+([\d.]+[GMK]?)', lines[1])
-                if mem_match:
-                    def parse_size(s):
-                        if 'G' in s: return float(s.replace('Gi','').replace('G','')) * 1024
-                        if 'M' in s: return float(s.replace('Mi','').replace('M',''))
-                        if 'K' in s: return float(s.replace('Ki','').replace('K','')) / 1024
-                        return 0
-                    total = parse_size(mem_match.group(1))
-                    used = parse_size(mem_match.group(2))
-                    if total > 0:
-                        result["usage_percent"] = (used / total) * 100
-                        result["total_gb"] = total / 1024
-                        result["used_gb"] = used / 1024
+            if not output.startswith("ERROR"):
+                lines = output.strip().split("\n")
+                if len(lines) >= 2:
+                    # Mem: 行
+                    mem_match = re.search(r'Mem:\s*([\d.]+[GMK]?)\s+([\d.]+[GMK]?)\s+([\d.]+[GMK]?)', lines[1])
+                    if mem_match:
+                        def parse_size(s):
+                            if 'G' in s: return float(s.replace('Gi','').replace('G','')) * 1024
+                            if 'M' in s: return float(s.replace('Mi','').replace('M',''))
+                            if 'K' in s: return float(s.replace('Ki','').replace('K','')) / 1024
+                            return 0
+                        total = parse_size(mem_match.group(1))
+                        used = parse_size(mem_match.group(2))
+                        if total > 0:
+                            result["usage_percent"] = (used / total) * 100
+                            result["total_gb"] = total / 1024
+                            result["used_gb"] = used / 1024
 
         if "swap" in metrics:
             swap_output = metrics["swap"].raw_output
-            swap_match = re.search(r'Swap:\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)', swap_output)
-            if swap_match:
-                total = float(swap_match.group(1))
-                used = float(swap_match.group(2))
-                if total > 0:
-                    result["swap_percent"] = (used / total) * 100
+            if not swap_output.startswith("ERROR"):
+                swap_match = re.search(r'Swap:\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)', swap_output)
+                if swap_match:
+                    total = float(swap_match.group(1))
+                    used = float(swap_match.group(2))
+                    if total > 0:
+                        result["swap_percent"] = (used / total) * 100
 
         # 告警
         threshold = self.thresholds.get("mem_percent", 85)
@@ -294,34 +305,35 @@ class MetricParser:
 
         if "disk_usage" in metrics:
             output = metrics["disk_usage"].raw_output
-            lines = output.strip().split("\n")
-            for line in lines[1:]:  # 跳过标题行
-                parts = line.split()
-                if len(parts) >= 5:
-                    mount = parts[-1] if not parts[-1].startswith('/dev') else parts[-2]
-                    usage_str = parts[-2].replace('%', '')
-                    try:
-                        usage = int(usage_str)
-                        size = parts[1]
-                        result["partitions"].append({
-                            "mount": mount,
-                            "usage_percent": usage,
-                            "size": size
-                        })
+            if not output.startswith("ERROR"):
+                lines = output.strip().split("\n")
+                for line in lines[1:]:  # 跳过标题行
+                    parts = line.split()
+                    if len(parts) >= 5:
+                        mount = parts[-1] if not parts[-1].startswith('/dev') else parts[-2]
+                        usage_str = parts[-2].replace('%', '')
+                        try:
+                            usage = int(usage_str)
+                            size = parts[1]
+                            result["partitions"].append({
+                                "mount": mount,
+                                "usage_percent": usage,
+                                "size": size
+                            })
 
-                        threshold = self.thresholds.get("disk_percent", 90)
-                        if usage >= 95:
-                            result["alerts"].append({
-                                "level": "CRITICAL",
-                                "message": f"{mount} 磁盘使用率 {usage}% 超过 95%"
-                            })
-                        elif usage >= threshold:
-                            result["alerts"].append({
-                                "level": "WARNING",
-                                "message": f"{mount} 磁盘使用率 {usage}% 超过 {threshold}%"
-                            })
-                    except ValueError:
-                        pass
+                            threshold = self.thresholds.get("disk_percent", 90)
+                            if usage >= 95:
+                                result["alerts"].append({
+                                    "level": "CRITICAL",
+                                    "message": f"{mount} 磁盘使用率 {usage}% 超过 95%"
+                                })
+                            elif usage >= threshold:
+                                result["alerts"].append({
+                                    "level": "WARNING",
+                                    "message": f"{mount} 磁盘使用率 {usage}% 超过 {threshold}%"
+                                })
+                        except ValueError:
+                            pass
 
         return result
 
@@ -331,20 +343,21 @@ class MetricParser:
 
         if "failed_login" in metrics:
             output = metrics["failed_login"].raw_output
-            count = len([l for l in output.strip().split("\n") if l and "failed" in l.lower()])
-            result["failed_login_count"] = count
+            if not output.startswith("ERROR"):
+                count = len([l for l in output.strip().split("\n") if l and "failed" in l.lower()])
+                result["failed_login_count"] = count
 
-            threshold = self.thresholds.get("failed_login_per_hour", 5)
-            if count >= 20:
-                result["alerts"].append({
-                    "level": "CRITICAL",
-                    "message": f"过去记录中发现 {count} 次登录失败，可能存在暴力破解"
-                })
-            elif count >= threshold:
-                result["alerts"].append({
-                    "level": "WARNING",
-                    "message": f"过去记录中发现 {count} 次登录失败"
-                })
+                threshold = self.thresholds.get("failed_login_per_hour", 5)
+                if count >= 20:
+                    result["alerts"].append({
+                        "level": "CRITICAL",
+                        "message": f"过去记录中发现 {count} 次登录失败，可能存在暴力破解"
+                    })
+                elif count >= threshold:
+                    result["alerts"].append({
+                        "level": "WARNING",
+                        "message": f"过去记录中发现 {count} 次登录失败"
+                    })
 
         return result
 
@@ -354,19 +367,25 @@ class MetricParser:
 
         if "netstat_summary" in metrics:
             try:
-                result["tcp_connections"] = int(metrics["netstat_summary"].raw_output.strip())
+                output = metrics["netstat_summary"].raw_output.strip()
+                if not output.startswith("ERROR"):
+                    result["tcp_connections"] = int(output)
             except:
                 pass
 
         if "tcp_status" in metrics:
             output = metrics["tcp_status"].raw_output
-            for line in output.strip().split("\n"):
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    count = int(parts[0])
-                    status = parts[1]
-                    if "TIME_WAIT" in status:
-                        result["time_wait"] = count
+            if not output.startswith("ERROR"):
+                for line in output.strip().split("\n"):
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        try:
+                            count = int(parts[0])
+                            status = parts[1]
+                            if "TIME_WAIT" in status:
+                                result["time_wait"] = count
+                        except ValueError:
+                            pass
 
         # 告警
         threshold = self.thresholds.get("netstat_connections", 5000)
@@ -391,6 +410,10 @@ class FeishuNotifier:
     async def send(self, content: str):
         if not self.webhook_url:
             print("⚠️ 未配置飞书 Webhook")
+            return False
+
+        if not HAS_AIOHTTP:
+            print("⚠️ 未安装 aiohttp，跳过飞书通知")
             return False
 
         payload = {
