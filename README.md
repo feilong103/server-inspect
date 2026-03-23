@@ -65,7 +65,7 @@ inspect --group cpu,mem       # 指定指标组
 运行：report
 ```
 
-报告自动保存到 `~/.qclaw/server-inspect/reports/`
+报告自动保存到 `~/server-inspect/reports/`
 
 ### 4. 设置定时任务
 
@@ -112,9 +112,9 @@ server-inspect/
 
 | 类型 | 路径 |
 |------|------|
-| 配置文件 | `~/.qclaw/server-inspect/config.json` |
-| 历史记录 | `~/.qclaw/server-inspect/history/{host}/{YYYY-MM}.jsonl` |
-| 巡检报告 | `~/.qclaw/server-inspect/reports/{timestamp}.md` |
+| 配置文件 | `~/server-inspect/config.json` |
+| 历史记录 | `~/server-inspect/history/{host}/YYYY-MM-DD_HHMMSS.jsonl`（每次巡检一个文件）|
+| 巡检报告 | `~/server-inspect/reports/{timestamp}.md` |
 
 ## 配置示例
 

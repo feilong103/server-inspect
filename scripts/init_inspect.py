@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 
-WORK_DIR = Path.home() / ".qclaw" / "server-inspect"
+WORK_DIR = Path.home() / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
 
 

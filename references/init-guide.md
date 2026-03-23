@@ -27,7 +27,7 @@ python3 --version  # 推荐 3.8+
 ### Step 1：创建工作目录
 
 ```bash
-mkdir -p ~/.qclaw/server-inspect/{history,reports,logs}
+mkdir -p ~/server-inspect/{history,reports,logs}
 ```
 
 ### Step 2：生成配置文件
@@ -100,7 +100,7 @@ mkdir -p ~/.qclaw/server-inspect/{history,reports,logs}
 
 ## 配置文件手动编辑
 
-配置文件位于 `~/.qclaw/server-inspect/config.json`，可直接编辑：
+配置文件位于 `~/server-inspect/config.json`，可直接编辑：
 
 ```json
 {
