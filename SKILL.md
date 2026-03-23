@@ -18,20 +18,6 @@ SSH 采集 → 结构化解析 → 阈值告警判定 → 历史数据存储 →
 
 ## 执行方式
 
-### 方式一：直接调用脚本（推荐）
-
-```bash
-python3 <skill_dir>/scripts/run_inspect.py
-
-# 指定主机
-python3 <skill_dir>/scripts/run_inspect.py --host prod-web-01
-
-# 指定指标组
-python3 <skill_dir>/scripts/run_inspect.py --groups "CPU,内存,磁盘"
-```
-
-### 方式二：通过 OpenClaw 对话
-
 用户说"巡检"时，AI 读取 `run_inspect.py` 的输出，加载生成的 Markdown 报告，注入 AI 分析和建议。
 
 ---
@@ -44,12 +30,12 @@ python3 <skill_dir>/scripts/run_inspect.py --groups "CPU,内存,磁盘"
 ~/.qclaw/server-inspect/
 ├── config.json              # 配置文件（需手动配置或 init 生成）
 ├── reports/
-│   └── report_YYYYMMDD_HHMMSS.md   # Markdown 巡检报告（含 AI 分析）
+│   └── {主机名}_report_YYYYMMDD_HHMMSS.md   # Markdown 巡检报告（含 AI 分析）
 ├── logs/
-│   └── inspect_YYYYMMDD_HHMMSS.log # 各主机的原始命令输出
+│   └── {主机名}_inspect_YYYYMMDD_HHMMSS.log # 各主机的原始命令输出
 └── history/
     └── {主机名}/
-        └── YYYY-MM.jsonl           # 结构化历史数据（每月一个文件）
+        └── YYYY-MMDD_HHMMSS.jsonl           # 结构化历史数据（每次一个文件）
 ```
 
 ### 历史数据格式（JSON Lines）
@@ -60,7 +46,7 @@ python3 <skill_dir>/scripts/run_inspect.py --groups "CPU,内存,磁盘"
 {"timestamp": "2026-03-23 14:17:00", "duration_ms": 21000, "overall_status": "WARNING", "alerts_count": 1, "cpu_pct": 45.2, "mem_pct": 72.1, "disk_pct": 68, "hostname": "gpt-load"}
 ```
 
-**重要**：历史数据按月累积，多次巡检后可用于趋势分析和容量预警。
+**重要**：历史数据按次累积，多次巡检后可用于趋势分析和容量预警。
 
 ### 数据生命周期
 
@@ -115,7 +101,7 @@ python3 <skill_dir>/scripts/run_inspect.py --groups "CPU,内存,磁盘"
 
 ```python
 # 每台主机的结构化记录写入 JSONL
-history_file = ~/.qclaw/server-inspect/history/{host}/YYYY-MM.jsonl
+history_file = ~/.qclaw/server-inspect/history/{host}/YYYY-MMDD_HHMMSS.jsonl
 with open(history_file, "a") as f:
     f.write(json.dumps({
         "timestamp": "...",
@@ -130,7 +116,7 @@ with open(history_file, "a") as f:
 同时写入原始命令日志：
 ```python
 # 原始输出写入日志文件
-log_file = ~/.qclaw/server-inspect/logs/inspect_YYYYMMDD_HHMMSS.log
+log_file = ~/.qclaw/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 ```
 
 ### Step 5：Markdown 报告生成
