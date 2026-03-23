@@ -66,12 +66,14 @@ python3 ~/server-inspect/scripts/run_inspect.py
   "schedule": { "kind": "cron", "expr": "0 9 * * *", "tz": "Asia/Shanghai" },
   "payload": {
     "kind": "agentTurn",
-    "message": "请执行 server-inspect 巡检：\n1. 运行 python3 ~/server-inspect/scripts/run_inspect.py\n2. 读取生成的报告 ~/server-inspect/reports/ 下最新的 .md 文件\n3. 找到 <!-- AI_SUGGESTIONS --> 占位符，注入 AI 分析和建议\n4. 将完整报告内容回复给我"
+    "message": "请执行 server-inspect 巡检：\n1. 查找 server-inspect skill 目录（通常在 ~/.qclaw/skills/server-inspect/ 或 /Applications/QClaw.app/Contents/Resources/openclaw/config/skills/server-inspect/）\n2. 运行该目录下的 scripts/run_inspect.py\n3. 读取生成的报告（reports/ 目录下最新的 .md 文件）\n4. 找到 <!-- AI_SUGGESTIONS --> 占位符，注入 AI 分析和建议\n5. 将完整报告内容回复给我"
   },
   "sessionTarget": "isolated",
   "delivery": { "mode": "announce" }
 }
 ```
+
+> **提示**：AI 会自动查找 skill 目录，无需硬编码路径。数据默认保存在 `~/server-inspect/`。
 
 ## 指标分组
 
