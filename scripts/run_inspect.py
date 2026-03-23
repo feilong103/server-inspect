@@ -101,12 +101,12 @@ class Config:
                 "mem_usage": "free -h",
                 "swap": "free | grep Swap",
                 "top_mem": "ps aux --sort=-%mem | head -6",
-                "oom": "journalctl -k 2>/dev/null | grep -i 'out of memory' | tail -5 || dmesg | grep -i 'out of memory' | tail -5",
+                "oom": "dmesg 2>/dev/null | grep -i 'out of memory\\|oom\\|killed process' | tail -5 || echo 'no oom events'",
             },
             "磁盘": {
                 "disk_usage": "df -h",
                 "disk_inode": "df -i",
-                "du_top": "du -sh /var/* 2>/dev/null | sort -rh | head -10",
+                "du_top": "timeout 5 du -sh /var/* 2>/dev/null | sort -rh | head -10 || echo 'du skipped (timeout or no access)'",
                 "disk_io": "iostat -x 1 2 2>/dev/null | tail -20 || echo 'iostat not available'",
             },
             "网络": {
@@ -141,6 +141,7 @@ class SSHExecutor:
     def __init__(self, server: dict):
         self.server = server
         self.key = os.path.expanduser(server.get("ssh_key", "~/.ssh/id_ed25519"))
+        self.password = server.get("ssh_password", "")
 
     def execute(self, command: str, timeout: int = 30) -> Tuple[bool, str]:
         if self.server["host"] in ("127.0.0.1", "localhost", ""):
@@ -158,16 +159,29 @@ class SSHExecutor:
 
         # SSH 远程执行
         try:
-            cmd = [
-                "ssh",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ConnectTimeout=10",
-                "-o", "BatchMode=yes",
-                "-i", self.key,
-                "-p", str(self.server.get("ssh_port", 22)),
-                f"{self.server['ssh_user']}@{self.server['host']}",
-                command
-            ]
+            if self.password:
+                # 密码认证：使用 sshpass
+                cmd = [
+                    "sshpass", "-p", self.password,
+                    "ssh",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=10",
+                    "-p", str(self.server.get("ssh_port", 22)),
+                    f"{self.server['ssh_user']}@{self.server['host']}",
+                    command
+                ]
+            else:
+                # 密钥认证
+                cmd = [
+                    "ssh",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "ConnectTimeout=10",
+                    "-o", "BatchMode=yes",
+                    "-i", self.key,
+                    "-p", str(self.server.get("ssh_port", 22)),
+                    f"{self.server['ssh_user']}@{self.server['host']}",
+                    command
+                ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             return result.returncode == 0, result.stdout + result.stderr
         except subprocess.TimeoutExpired:
@@ -175,10 +189,10 @@ class SSHExecutor:
         except Exception as e:
             return False, str(e)
 
-    def execute_batch(self, commands: List[Tuple[str, str]]) -> Dict[str, MetricResult]:
+    def execute_batch(self, commands: List[Tuple[str, str]], timeout: int = 10) -> Dict[str, MetricResult]:
         results = {}
         for metric_id, cmd in commands:
-            ok, output = self.execute(cmd)
+            ok, output = self.execute(cmd, timeout=timeout)
             results[metric_id] = MetricResult(
                 metric_id=metric_id,
                 raw_output=output if ok else f"ERROR: {output}",
