@@ -40,13 +40,19 @@ SSH 采集 → 结构化解析 → 阈值告警判定 → 历史数据存储 →
 
 ### 历史数据格式（JSON Lines）
 
-每行一条记录，包含关键指标用于趋势分析：
+每次巡检生成一个独立的 JSONL 文件，文件名包含时间戳：
+
+```
+~/.qclaw/server-inspect/history/{主机名}/2026-03-23_141700.jsonl
+```
+
+每条记录格式：
 
 ```json
 {"timestamp": "2026-03-23 14:17:00", "duration_ms": 21000, "overall_status": "WARNING", "alerts_count": 1, "cpu_pct": 45.2, "mem_pct": 72.1, "disk_pct": 68, "hostname": "gpt-load"}
 ```
 
-**重要**：历史数据按次累积，多次巡检后可用于趋势分析和容量预警。
+**重要**：历史数据按调用次数累积，每次巡检一个文件，多次巡检后可用于趋势分析和容量预警。
 
 ### 数据生命周期
 
@@ -54,7 +60,7 @@ SSH 采集 → 结构化解析 → 阈值告警判定 → 历史数据存储 →
 |------|------|------|
 | 巡检报告 | `~/.qclaw/server-inspect/reports/` | 完整 Markdown 报告，含 AI 分析 |
 | 原始日志 | `~/.qclaw/server-inspect/logs/` | 各主机的原始命令输出 |
-| 历史记录 | `~/.qclaw/server-inspect/history/{host}/` | 结构化 JSON Lines，按月存储 |
+| 历史记录 | `~/.qclaw/server-inspect/history/{host}/` | 结构化 JSON Lines，按调用次数存储 |
 | 配置文件 | `~/.qclaw/server-inspect/config.json` | 服务器列表、阈值、通知配置 |
 
 ---

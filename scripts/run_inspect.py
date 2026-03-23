@@ -285,11 +285,13 @@ class ReportGenerator:
 
     @staticmethod
     def _history(host: str, days=7) -> list:
+        """读取历史数据，按时间排序返回"""
         d = WORK_DIR / "history" / host
         if not d.exists(): return []
         cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         records = []
-        for f in d.glob("*.jsonl"):
+        # 新格式：每次调用一个文件 YYYY-MM-DD_HHMMSS.jsonl
+        for f in sorted(d.glob("*.jsonl")):
             with open(f) as fh:
                 for line in fh:
                     try:
@@ -297,7 +299,7 @@ class ReportGenerator:
                         if r.get("timestamp","")[:10] >= cutoff:
                             records.append(r)
                     except: pass
-        return sorted(records, key=lambda x: x.get("timestamp",""))
+        return records
 
     @staticmethod
     def _trend(host: str, metric: str, label: str, warn=None, crit=None, days=7) -> str:
@@ -626,12 +628,13 @@ async def run_inspect(host_filter: str = None, groups: List[str] = None):
                 f.write(f"\n[{mid}]\n{m.raw_output}\n")
     print(f"📝 日志: {lp}")
 
-    # 保存历史
+    # 保存历史：每次巡检一个独立文件
     for r in all_reports:
         hd = WORK_DIR / "history" / r.name
         hd.mkdir(parents=True, exist_ok=True)
-        ms = datetime.now().strftime("%Y-%m")
-        hf = hd / f"{ms}.jsonl"
+        # 文件名格式：YYYY-MM-DD_HHMMSS.jsonl（按调用次数，不按月）
+        ts_filename = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        hf = hd / f"{ts_filename}.jsonl"
 
         cp = ReportGenerator._cpu_pct(r.metrics.get("top",MetricResult("","")).raw_output) if "top" in r.metrics else 0.0
         mp = ReportGenerator._mem_pct(r.metrics.get("mem_usage",MetricResult("","")).raw_output) if "mem_usage" in r.metrics else 0.0
