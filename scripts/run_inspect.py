@@ -23,7 +23,7 @@ WORK_DIR = Path.home() / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
 
 # ==================== 导入通知模块 ====================
-from notifier import FeishuNotifier, EmailNotifier
+from notify import FeishuNotifier, EmailNotifier
 
 
 

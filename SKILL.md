@@ -211,7 +211,7 @@ log_file = ~/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 
 ## 功能二：报告通知（独立功能）
 
-**⚠️ 重要：直接执行 send_notifications.py 脚本，不要自己写代码！**
+**⚠️ 重要：直接执行 notify.py 脚本，不要自己写代码！**
 
 **触发场景**：
 - 用户说"发送报告到飞书"、"推送飞书通知"
@@ -223,22 +223,22 @@ log_file = ~/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 
 **发送所有通知（飞书 + 邮件）**：
 ```bash
-python3 ~/server-inspect/send_notifications.py
+python3 ~/server-inspect/scripts/notify.py
 ```
 
 **只发送飞书**：
 ```bash
-python3 ~/server-inspect/send_notifications.py --feishu
+python3 ~/server-inspect/scripts/notify.py --feishu
 ```
 
 **只发送邮件**：
 ```bash
-python3 ~/server-inspect/send_notifications.py --email
+python3 ~/server-inspect/scripts/notify.py --email
 ```
 
 ### 脚本功能说明
 
-`send_notifications.py` 会自动完成以下步骤：
+`notify.py` 会自动完成以下步骤：
 
 **Step 1：检查配置文件**
 - 读取 `~/server-inspect/config.json`
@@ -259,8 +259,8 @@ python3 ~/server-inspect/send_notifications.py --email
 - 包含名称、IP、告警列表、总体状态
 
 **Step 5：发送通知**
-- 调用 `notifier.py` 的 `FeishuNotifier.send()` 发送飞书
-- 调用 `notifier.py` 的 `EmailNotifier.send()` 发送邮件
+- 调用 `FeishuNotifier.send()` 发送飞书
+- 调用 `EmailNotifier.send()` 发送邮件
 
 **Step 6：提示缺失配置**
 - 如果未配置飞书 Webhook，提示配置方法
@@ -270,7 +270,7 @@ python3 ~/server-inspect/send_notifications.py --email
 
 **只需要执行脚本**：
 ```bash
-python3 ~/server-inspect/send_notifications.py
+python3 ~/server-inspect/scripts/notify.py
 ```
 
 **不要做的事情**：
@@ -284,15 +284,23 @@ python3 ~/server-inspect/send_notifications.py
 ```
 ~/server-inspect/
 ├── config.json              # 配置文件
-├── send_notifications.py    # 发送通知脚本（独立调用）
 ├── reports/                 # Markdown 巡检报告
 ├── logs/                    # 原始命令输出
 ├── history/                 # 历史数据（JSON Lines）
 └── scripts/
     ├── init_inspect.py      # 初始化脚本
     ├── run_inspect.py       # 巡检执行脚本
-    └── notifier.py          # 通知模块（飞书、邮件）
+    └── notify.py            # 通知脚本（飞书 + 邮件）
 ```
+
+### notify.py 模块
+
+独立的通知脚本，包含：
+
+**1. FeishuNotifier 类** — 飞书卡片通知
+**2. EmailNotifier 类** — 邮件 HTML 通知
+**3. extract_from_report()** — 从报告提取数据
+**4. main()** — 主函数，支持 `--feishu` 和 `--email` 参数
 
 ### notifier.py 模块
 
