@@ -135,7 +135,7 @@ class FeishuNotifier:
                             "tag": "div",
                             "text": {
                                 "tag": "lark_md",
-                                "content": f"**巡检时间** {ts} {datetime.now().strftime('%H:%M:%S')}　｜　**耗时** {total_time}s　｜　**服务器数量** {len(reports)} 台",
+                                "content": f"**巡检时间** {ts} {datetime.now().strftime('%H:%M:%S')} ｜ **耗时** {total_time}s ｜ **服务器数量** {len(reports)} 台",
                             },
                         },
                         {"tag": "hr"},
@@ -302,7 +302,7 @@ class EmailNotifier:
             for a in r.alerts:
                 if a.get("level") == "CRITICAL":
                     suggestions.append(
-                        f'<div class="suggestion"><strong>建议 {idx}: 紧急 — {r.name} 告警处理</strong><br>问题: {a.get("message", "")}<br>操作步骤:<br>1. 立即检查服务器状态<br>2. 查看相关日志<br>3. 采取应急措施<br>预期效果: 恢复服务正常运行</div>'
+                        f'<div class="suggestion"><strong>建议 {idx}: 紧急 - {r.name} 告警处理</strong><br>问题: {a.get("message", "")}<br>操作步骤:<br>1. 立即检查服务器状态<br>2. 查看相关日志<br>3. 采取应急措施<br>预期效果: 恢复服务正常运行</div>'
                     )
                     idx += 1
                     break
@@ -310,7 +310,7 @@ class EmailNotifier:
             for a in r.alerts:
                 if a.get("level") == "WARNING":
                     suggestions.append(
-                        f'<div class="suggestion"><strong>建议 {idx}: 关注 — {r.name} 监控</strong><br>问题: {a.get("message", "")}<br>操作步骤:<br>1. 持续监控该指标<br>2. 准备应急预案<br>预期效果: 提前发现问题</div>'
+                        f'<div class="suggestion"><strong>建议 {idx}: 关注 - {r.name} 监控</strong><br>问题: {a.get("message", "")}<br>操作步骤:<br>1. 持续监控该指标<br>2. 准备应急预案<br>预期效果: 提前发现问题</div>'
                     )
                     idx += 1
                     break
@@ -322,7 +322,7 @@ class EmailNotifier:
 
     @staticmethod
     def generate_html(
-        reports: list, thresholds: dict, report_path: str, signature: str
+        reports: list, thresholds: dict, report_path: str
     ) -> str:
         """生成完整 HTML 邮件"""
         status_color = EmailNotifier._overall_status(reports)
@@ -363,7 +363,6 @@ class EmailNotifier:
         .suggestion strong {{ color: #6A1B9A; }}
         .chart {{ background: #f9f9f9; padding: 15px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; margin: 10px 0; white-space: pre; }}
         .footer {{ background: #f5f5f5; padding: 20px; text-align: center; font-size: 12px; color: #999; border-top: 1px solid #eee; }}
-        .signature {{ background: #f9f9f9; padding: 15px; border-radius: 6px; font-size: 12px; color: #666; margin-top: 20px; white-space: pre-wrap; font-family: monospace; }}
         code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }}
     </style>
 </head>
@@ -421,12 +420,6 @@ class EmailNotifier:
             </div>
         </div>
 
-        <div class="card">
-            <div class="section">
-                <div class="signature">{signature}</div>
-            </div>
-        </div>
-
         <div class="footer">
             <p>此邮件由 OpenClaw Server Inspect 自动生成，请勿直接回复。</p>
             <p>如有问题，请联系系统管理员。</p>
@@ -438,15 +431,15 @@ class EmailNotifier:
 
     @staticmethod
     def send(
-        smtp_config: dict, reports: list, thresholds: dict, report_path: str, signature: str
+        smtp_config: dict, reports: list, thresholds: dict, report_path: str
     ):
         """发送邮件"""
         if not smtp_config or not smtp_config.get("smtp_host"):
             return
-
+        
         try:
             html_content = EmailNotifier.generate_html(
-                reports, thresholds, report_path, signature
+                reports, thresholds, report_path
             )
 
             msg = MIMEMultipart("alternative")

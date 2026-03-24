@@ -201,8 +201,7 @@ Markdown 报告生成 → AI 分析注入 → 飞书通知【可选】→ 邮件
       "from": "your-email@qq.com",
       "to": ["recipient@example.com"]
     }
-  },
-  "signature": "-- \n公司名称\n联系方式"
+  }
 }
 ```
 

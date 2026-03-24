@@ -242,7 +242,6 @@ report_path = max(Path("~/server-inspect/reports").glob("*.md"), key=lambda p: p
 config = json.load(open("~/server-inspect/config.json"))
 feishu_webhook = config.get("notification", {}).get("feishu_webhook")
 email_config = config.get("notification", {}).get("email")
-signature = config.get("signature", "")
 thresholds = config.get("alert_thresholds", {})
 ```
 
@@ -276,8 +275,7 @@ EmailNotifier.send(
     smtp_config=email_config,
     reports=reports,  # 从报告提取的数据
     thresholds=thresholds,
-    report_path=str(report_path),
-    signature=signature
+    report_path=str(report_path)
 )
 ```
 
@@ -350,8 +348,7 @@ EmailNotifier.send(
     smtp_config: dict,          # SMTP 配置
     reports: List[ServerReport], # 巡检报告对象列表
     thresholds: dict,           # 告警阈值
-    report_path: str,           # 报告文件路径
-    signature: str              # 邮件签名
+    report_path: str            # 报告文件路径
 )
 ```
 
