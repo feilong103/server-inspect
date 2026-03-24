@@ -427,14 +427,30 @@ Day  17   18   19   20   21   22   23
                 part.add_header('Content-Disposition', 'attachment', filename=Path(report_path).name)
                 msg.attach(part)
             
-            # 发送邮件
-            server = smtplib.SMTP(smtp_config.get("smtp_host"), smtp_config.get("smtp_port", 587), timeout=10)
-            server.starttls()
-            server.login(smtp_config.get("smtp_user"), smtp_config.get("smtp_password"))
-            server.send_message(msg)
-            server.quit()
-            
-            print(f"📧 邮件已发送到 {', '.join(smtp_config.get('to', []))}")
+            # 发送邮件（优先用 SSL 465，失败则用 STARTTLS 587）
+            port = smtp_config.get("smtp_port", 465)
+            try:
+                if port == 465:
+                    server = smtplib.SMTP_SSL(smtp_config.get("smtp_host"), port, timeout=30)
+                else:
+                    server = smtplib.SMTP(smtp_config.get("smtp_host"), port, timeout=30)
+                    server.starttls()
+                server.login(smtp_config.get("smtp_user"), smtp_config.get("smtp_password"))
+                server.send_message(msg)
+                server.quit()
+                print(f"📧 邮件已发送到 {', '.join(smtp_config.get('to', []))}")
+            except Exception as e1:
+                # 如果 465 失败，尝试 587
+                if port == 465:
+                    print(f"⚠️ 465 端口失败，尝试 587 端口...")
+                    server = smtplib.SMTP(smtp_config.get("smtp_host"), 587, timeout=30)
+                    server.starttls()
+                    server.login(smtp_config.get("smtp_user"), smtp_config.get("smtp_password"))
+                    server.send_message(msg)
+                    server.quit()
+                    print(f"📧 邮件已发送到 {', '.join(smtp_config.get('to', []))}")
+                else:
+                    raise e1
         except Exception as e:
             print(f"⚠️ 邮件发送失败: {e}")
 
