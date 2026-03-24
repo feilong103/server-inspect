@@ -102,58 +102,20 @@
 
 ## 四、💡 AI 优化建议
 
-### 建议 1: 紧急 — 清理 /var 分区（prod-web-01）
+<!-- AI_SUGGESTIONS -->
 
-**问题**: /var 分区使用率 91%，剩余空间不足 5GB，存在服务中断风险。
+**说明**：此占位符由 OpenClaw AI 自动替换。AI 会分析巡检数据，注入以下内容：
+- 总体 AI 分析摘要
+- 针对每个告警的具体建议（含操作步骤/风险提示）
+- 历史趋势分析
 
-**操作建议**:
-```bash
-# 查看 /var/log 大文件
-du -sh /var/log/*
-# 清理旧的日志（保留最近 7 天）
-find /var/log -name "*.log" -mtime +7 -delete
-# 清理旧的压缩日志
-find /var/log -name "*.gz" -mtime +30 -delete
-# 查看 apt 缓存
-du -sh /var/cache/apt/archives/
-# 清理 apt 缓存
-apt-get clean
-```
+**AI 分析框架**：
+1. 异常检测优先级：Critical 🔴 → Warning 🟠 → Info 🟡
+2. 根因推断：不仅报指标异常，要推断根本原因
+3. 可执行建议：每条建议含具体命令/步骤/风险提示
+4. 量化预期：给出预期效果的具体数字
 
-**预计释放**: 3~8 GB（根据日志量）
-
----
-
-### 建议 2: 中期 — 优化 PHP-FPM 配置（prod-web-01）
-
-**问题**: PHP-FPM 进程占用 CPU 高（38.7%），可能导致响应慢。
-
-**操作建议**:
-```bash
-# 检查当前 PHP-FPM 配置
-cat /etc/php/8.1/fpm/pool.d/www.conf | grep -E "pm.max_children|pm.start_servers|pm.min_spare"
-# 建议调整为（根据 7.6G 内存）:
-# pm.max_children = 20
-# pm.start_servers = 5
-# pm.min_spare = 3
-# pm.max_spare = 10
-```
-
----
-
-### 建议 3: 规划 — 数据库连接池优化（prod-db-01）
-
-**问题**: MySQL 连接数偏高，可能存在连接泄漏。
-
-**操作建议**:
-```sql
--- 检查当前连接
-SHOW STATUS LIKE 'Threads_connected';
--- 检查最大连接数
-SHOW VARIABLES LIKE 'max_connections';
--- 检查长时间运行的查询
-SHOW FULL PROCESSLIST;
-```
+详见 [references/system-prompt.md](../references/system-prompt.md) 的 AI 分析框架。
 
 ---
 
