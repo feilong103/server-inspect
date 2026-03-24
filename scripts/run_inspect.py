@@ -786,7 +786,7 @@ async def run_inspect(host_filter: str = None, groups: List[str] = None):
     # 邮件通知
     email_config = notification.get("email", {})
     if email_config and email_config.get("smtp_host"):
-        EmailNotifier.send(email_config, all_reports, thresholds, str(rp), "")
+        EmailNotifier.send(email_config, all_reports, thresholds, str(rp))
 
     return all_reports, report_md
 
