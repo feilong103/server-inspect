@@ -22,8 +22,15 @@ except ImportError:
 WORK_DIR = Path.home() / "server-inspect"
 CONFIG_FILE = WORK_DIR / "config.json"
 
-
+# ==================== 导入通知模块 ====================
 from notifier import FeishuNotifier, EmailNotifier
+
+
+
+# ==================== 数据结构 ====================
+
+@dataclass
+class FeishuNotifier:
     """飞书卡片通知"""
 
     STATUS_COLOR = {
@@ -73,9 +80,7 @@ from notifier import FeishuNotifier, EmailNotifier
                 st = "🟠 关注"
             else:
                 st = "🟢 正常"
-            # 用反引号包裹主机名，避免括号等特殊字符导致 markdown 表格解析错误
-            name = f"`{r.name}`" if r.name else "`未知`"
-            lines.append(f"| {name} | {cpu_i} {cp:.0f}% | {mem_i} {mp:.0f}% | {disk_i} {dp:.0f}% | {safe_i} | {st} |")
+            lines.append(f"| {r.name} | {cpu_i} {cp:.0f}% | {mem_i} {mp:.0f}% | {disk_i} {dp:.0f}% | {safe_i} | {st} |")
         return "\n".join(lines)
 
     @staticmethod
@@ -803,12 +808,6 @@ async def run_inspect(host_filter: str = None, groups: List[str] = None):
     webhook = notification.get("feishu_webhook", "")
     if webhook:
         FeishuNotifier.send(webhook, all_reports, thresholds, str(rp))
-
-    # 邮件通知
-    smtp_config = notification.get("email", {})
-    signature = config.data.get("signature", "-- \n锐盈云技术服务（天津）有限公司")
-    if smtp_config and smtp_config.get("smtp_host"):
-        EmailNotifier.send(smtp_config, all_reports, thresholds, str(rp), signature)
 
     return all_reports, report_md
 
