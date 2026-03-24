@@ -165,9 +165,9 @@ log_file = ~/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 ```
 
 **AI 的职责**：
-- ✅ **要**调用提供的 notifier.py 模块的通知函数
-- ❌ **不要**自己组织通知内容
-- ❌ **不要**幻想数据
+- ✅ 如果用户配置了通知（feishu_webhook 或 email），调用 notifier.py 的通知函数
+- ❌ 不要自己组织通知内容，数据由巡检报告提供
+- ❌ 不要幻想数据
 
 ## 代码结构
 
