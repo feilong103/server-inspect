@@ -211,7 +211,7 @@ log_file = ~/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 
 ## 功能二：报告通知（独立功能）
 
-**⚠️ 重要：不要自己写通知代码，使用 skill 提供的 notifier.py！**
+**⚠️ 重要：直接执行 send_notifications.py 脚本，不要自己写代码！**
 
 **触发场景**：
 - 用户说"发送报告到飞书"、"推送飞书通知"
@@ -219,113 +219,79 @@ log_file = ~/server-inspect/logs/{host}_inspect_YYYYMMDD_HHMMSS.log
 - 用户说"推送报告"、"发送通知"
 - 用户说"把最新的巡检报告发给我"
 
-**执行前必读**：
-```
-1. 先读取 SKILL.md 了解完整流程
-2. 使用 scripts/notifier.py 提供的函数
-3. 不要自己写飞书/邮件发送代码
-4. 数据从报告中提取，不要幻想
-```
+### 执行方式
 
-**执行流程**：
-
-### Step 1：获取最近一次巡检报告
-
-```python
-# 查找 reports/ 目录下最新的 .md 文件
-report_path = max(Path("~/server-inspect/reports").glob("*.md"), key=lambda p: p.stat().st_mtime)
+**发送所有通知（飞书 + 邮件）**：
+```bash
+python3 ~/server-inspect/send_notifications.py
 ```
 
-### Step 2：读取配置文件
-
-```python
-config = json.load(open("~/server-inspect/config.json"))
-feishu_webhook = config.get("notification", {}).get("feishu_webhook")
-email_config = config.get("notification", {}).get("email")
-thresholds = config.get("alert_thresholds", {})
+**只发送飞书**：
+```bash
+python3 ~/server-inspect/send_notifications.py --feishu
 ```
 
-### Step 3：提取报告内容
-
-**从 Markdown 报告中提取**：
-- 巡检时间、服务器数量、耗时
-- 各主机的 CPU、内存、磁盘、安全状态
-- 告警列表（级别、服务器、消息）
-- AI 分析建议（如果有）
-
-### Step 4：调用通知函数
-
-**飞书通知**：
-```python
-from notifier import FeishuNotifier
-
-FeishuNotifier.send(
-    webhook_url=feishu_webhook,
-    reports=reports,  # 从报告提取的数据
-    thresholds=thresholds,
-    report_path=str(report_path)
-)
+**只发送邮件**：
+```bash
+python3 ~/server-inspect/send_notifications.py --email
 ```
 
-**邮件通知**：
-```python
-from notifier import EmailNotifier
+### 脚本功能说明
 
-EmailNotifier.send(
-    smtp_config=email_config,
-    reports=reports,  # 从报告提取的数据
-    thresholds=thresholds,
-    report_path=str(report_path)
-)
+`send_notifications.py` 会自动完成以下步骤：
+
+**Step 1：检查配置文件**
+- 读取 `~/server-inspect/config.json`
+- 检查通知配置（飞书 Webhook、邮件 SMTP）
+
+**Step 2：获取最新报告**
+- 查找 `reports/` 目录下最新的 `.md` 文件
+- 如果没有报告，提示用户先执行巡检
+
+**Step 3：提取报告数据**
+- 从 Markdown 报告中提取服务器信息（名称、IP）
+- 从历史数据中提取 CPU、内存、磁盘使用率
+- 从报告中提取告警信息
+- 从日志中提取登录失败记录
+
+**Step 4：构建 ServerReport 对象**
+- 为每台服务器创建 `ServerReport` 对象
+- 包含名称、IP、告警列表、总体状态
+
+**Step 5：发送通知**
+- 调用 `notifier.py` 的 `FeishuNotifier.send()` 发送飞书
+- 调用 `notifier.py` 的 `EmailNotifier.send()` 发送邮件
+
+**Step 6：提示缺失配置**
+- 如果未配置飞书 Webhook，提示配置方法
+- 如果未配置邮件 SMTP，提示配置方法
+
+### AI 的职责
+
+**只需要执行脚本**：
+```bash
+python3 ~/server-inspect/send_notifications.py
 ```
 
-### Step 5：处理缺失配置
-
-**如果用户没有配置飞书 Webhook**：
-```
-⚠️ 未配置飞书通知。请提供飞书 Webhook URL，或在 config.json 中配置：
-"notification": {
-  "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-}
-```
-
-**如果用户没有配置邮件 SMTP**：
-```
-⚠️ 未配置邮件通知。请提供邮件配置，或在 config.json 中配置：
-"notification": {
-  "email": {
-    "smtp_host": "smtp.qq.com",
-    "smtp_port": 465,
-    "smtp_user": "your-email@qq.com",
-    "smtp_password": "your-auth-code",
-    "from": "your-email@qq.com",
-    "to": ["recipient@example.com"]
-  }
-}
-```
-
-### Step 6：确认发送结果
-
-```
-✅ 飞书通知已发送
-✅ 邮件已发送到 wangfl@rynnova.com
-```
-
-**AI 的职责**：
-- ✅ 获取最新的巡检报告文件
-- ✅ 读取配置文件中的通知配置
-- ✅ 从报告中提取数据（不要幻想）
-- ✅ 调用 notifier.py 的通知函数
-- ✅ 提示用户提供缺失的配置
-- ❌ 不要自己组织通知内容
+**不要做的事情**：
+- ❌ 不要自己写提取报告的代码
+- ❌ 不要自己写飞书/邮件发送代码
+- ❌ 不要自己解析 Markdown 格式
 - ❌ 不要幻想报告数据
 
 ## 代码结构
 
 ```
-scripts/
-├── run_inspect.py      # 核心巡检脚本（采集、解析、报告生成）
-└── notifier.py         # 通知模块（飞书、邮件）
+~/server-inspect/
+├── config.json              # 配置文件
+├── send_notifications.py    # 发送通知脚本（独立调用）
+├── reports/                 # Markdown 巡检报告
+├── logs/                    # 原始命令输出
+├── history/                 # 历史数据（JSON Lines）
+└── scripts/
+    ├── init_inspect.py      # 初始化脚本
+    ├── run_inspect.py       # 巡检执行脚本
+    └── notifier.py          # 通知模块（飞书、邮件）
 ```
 
 ### notifier.py 模块
