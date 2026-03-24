@@ -265,6 +265,68 @@ class EmailNotifier:
         return "red" if has_crit else ("yellow" if has_warn else "green")
 
     @staticmethod
+    def _server_table_html(reports: list, thresholds: dict) -> str:
+        """生成 HTML 表格"""
+        rows = []
+        for r in reports:
+            # 从 metrics 中提取数据（需要解析原始输出）
+            # 这里简化处理，使用默认值，实际应该从 metrics 中解析
+            cp = 0.0
+            mp = 0.0
+            dp = 0
+            
+            # 尝试从 metrics 中获取 top 输出并解析 CPU
+            if "top" in r.metrics:
+                import re
+                m = re.search(r'%Cpu\(s\):\s*([\d.]+)\s*us', r.metrics["top"].raw_output)
+                if m:
+                    cp = float(m.group(1))
+            
+            # 尝试从 metrics 中获取内存使用率
+            if "mem_usage" in r.metrics:
+                import re
+                lines = r.metrics["mem_usage"].raw_output.strip().split("\n")
+                if len(lines) >= 2:
+                    tm = re.search(r'Mem:\s+(\S+)', lines[1])
+                    um = re.search(r'Mem:\s+\S+\s+(\S+)', lines[1])
+                    if tm and um:
+                        def to_mb(s):
+                            s = s.strip()
+                            if 'G' in s: return float(re.sub(r'[A-Za-z]','',s)) * 1024
+                            if 'M' in s: return float(re.sub(r'[A-Za-z]','',s))
+                            return 0.0
+                        try:
+                            t, u = to_mb(tm.group(1)), to_mb(um.group(1))
+                            mp = round((u/t)*100, 1) if t > 0 else 0.0
+                        except: pass
+            
+            # 尝试从 metrics 中获取磁盘使用率
+            if "disk_usage" in r.metrics:
+                import re
+                for line in r.metrics["disk_usage"].raw_output.strip().split("\n")[1:]:
+                    parts = line.split()
+                    if len(parts) >= 5 and parts[0].startswith("/dev"):
+                        try:
+                            dp = int(parts[-2].replace('%',''))
+                            break  # 只取第一个分区
+                        except: pass
+            
+            ct, mt, dt = thresholds.get("cpu_percent", 80), thresholds.get("mem_percent", 85), thresholds.get("disk_percent", 90)
+            cpu_i = "✅" if cp < ct * 0.9 else ("🟠" if cp < ct else "🔴")
+            mem_i = "✅" if mp < mt * 0.9 else ("🟠" if mp < mt else "🔴")
+            disk_i = "✅" if dp < dt * 0.9 else ("🟠" if dp < dt else "🔴")
+            
+            has_login = any("登录" in a.get("message", "") for a in r.alerts)
+            safe_i = "⚠️" if has_login else "✅"
+            
+            has_crit = any(a.get("level") == "CRITICAL" for a in r.alerts)
+            has_warn = any(a.get("level") == "WARNING" for a in r.alerts)
+            st = "🔴 严重" if has_crit else ("🟠 关注" if has_warn else "🟢 正常")
+            
+            rows.append(f"<tr><td><strong>{r.name}</strong></td><td>{cpu_i} {cp:.0f}%</td><td>{mem_i} {mp:.0f}%</td><td>{disk_i} {dp:.0f}%</td><td>{safe_i}</td><td>{st}</td></tr>")
+        return "\n".join(rows)
+
+    @staticmethod
     def _alerts_html(reports: list) -> str:
         """生成告警 HTML"""
         alerts = []
@@ -393,6 +455,27 @@ class EmailNotifier:
                         <div class="value">{len(reports)} 台</div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="section">
+                <div class="section-title">📈 巡检结果详情</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>主机</th>
+                            <th>CPU</th>
+                            <th>内存</th>
+                            <th>磁盘</th>
+                            <th>安全</th>
+                            <th>状态</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {EmailNotifier._server_table_html(reports, thresholds)}
+                    </tbody>
+                </table>
             </div>
         </div>
 
