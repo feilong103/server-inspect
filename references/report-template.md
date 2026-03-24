@@ -135,45 +135,5 @@ Day  17   18   19   20   21   22   23
 
 ---
 
-## 六、附录
-
-### A. 巡检命令输出（完整日志）
-
-<details>
-<summary>点击展开：原始命令输出</summary>
-
-```
-[hostname]
-prod-web-01
-
-[uptime -p]
-up 18 weeks, 4 days, 14 hours 23 minutes
-
-[top -bn1]
-top - 09:00:15 up 128 days, 14:23,  3 users,  load average: 5.42, 4.81, 3.22
-Tasks: 234 total,   2 running, 232 sleeping,   0 stopped,   0 zombie
-%Cpu(s): 92.3 us,  3.1 sy,  0.0 ni,  4.6 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
-KiB Mem :  7990004 total,  1894524 free,  5123456 used,   972024 buff/cache
-KiB Swap:  2097148 total,  1584320 free,   512828 used.
-
-[free -h]
-              total        used        free      shared  buff/cache   available
-Mem:          7.6Gi       4.9Gi       1.8Gi       234Mi       1.1Gi       2.4Gi
-Swap:         2.0Gi       501Mi       1.5Gi
-
-[df -h]
-Filesystem      Size  Used Avail Use% Mounted on
-/dev/sda1        50G   44G  5.0G  91% /var
-...
-```
-</details>
-
-### B. 巡检元数据
-
-| 字段 | 值 |
-|------|-----|
-| 报告版本 | v1.0 |
-| 巡检工具 | server-inspect skill |
-| AI 模型 | qclaw/modelroute |
-| 报告生成时间 | 2026-03-23 09:00:45 |
-| 配置文件版本 | 1.0 |
+*📋 此报告由 OpenClaw Server Inspect 自动生成*
+*🕐 报告生成时间: 2026-03-23 09:00:45*

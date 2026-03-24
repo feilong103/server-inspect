@@ -678,38 +678,12 @@ class ReportGenerator:
             md += ReportGenerator._trend(r.name, "disk_pct", "磁盘")
             md += "\n"
 
-        # 六、附录
-        md += f"""## 六、附录
-
-### A. 巡检命令输出（完整日志）
-
-<details>
-<summary>点击展开：原始命令输出</summary>
-
-```
-"""
-        for r in reports:
-            md += f"\n[=== {r.name} ({r.host}) ===]\n\n"
-            for mid, m in r.metrics.items():
-                md += f"\n[{mid}]\n{m.raw_output}\n"
-        md += """
-```
-</details>
-
-### B. 巡检元数据
-
-| 字段 | 值 |
-|------|-----|
-| 报告版本 | v1.0 |
-| 巡检工具 | server-inspect skill |
-| AI 模型 | OpenClaw（本地分析，不调用外部 LLM） |
-| 报告生成时间 | """ + ts + """ |
-| 配置文件版本 | """ + config.get("version","1.0") + """ |
-
+        # 报告页脚
+        md += f"""
 ---
 
 *📋 此报告由 OpenClaw Server Inspect 自动生成*
-*🕐 报告生成时间: """ + ts + """*
+*🕐 报告生成时间: {ts}*
 """
         return md
 
